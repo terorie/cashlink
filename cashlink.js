@@ -1,9 +1,13 @@
 class Cashlink {
-	constructor(myWallet, transferWallet, senderAddress, mempool) {
+	constructor(myWallet, transferWallet, senderAddress, accounts, mempool) {
 		this._myWallet = myWallet;
 		this._transferWallet = transferWallet;
 		this._senderAddress = senderAddress;
-		this._mempool = mempool
+		this._mempool = mempool;
+		mempool.on('transaction-added', this._onTransactionAdded.bind(this));
+		accounts.on(transferWallet.address, this._onBalanceChanged.bind(this));
+		this.getAmount(true).then(unconfirmedAmount => this.fire('unconfirmed-amount-changed', unconfirmedAmount));
+		this.getAmount(false).then(confirmedAmount => this.fire('confirmed-amount-changed', confirmedAmount));
 	}
 
 
@@ -14,7 +18,7 @@ class Cashlink {
 		}
 		let senderAddress = myWallet.address;
 		let transferWallet = await Wallet.createVolatile(accounts, mempool);
-		let cashlink = new Cashlink(myWallet, transferWallet, senderAddress, mempool);
+		let cashlink = new Cashlink(myWallet, transferWallet, senderAddress, accounts, mempool);
 		await cashlink.setAmount(amount);
 		return cashlink;
 	}
@@ -35,7 +39,7 @@ class Cashlink {
 			publicKey: keys[1]
 		};
 		let transferWallet = await new Wallet(keys, accounts, mempool);
-		return new Cashlink(myWallet, transferWallet, senderAddress, mempool);
+		return new Cashlink(myWallet, transferWallet, senderAddress, accounts, mempool);
 	}
 
 
@@ -88,9 +92,15 @@ class Cashlink {
 	}
 
 
-	async _getTransferWalletBalance(includeNotYetVerifiedTransactions) {
+	_determineAmountWithoutFees(amountWithFees) {
+		let fee = calculateFee(amountWithFees, true);
+		return Math.max(0, amountWithFees - fee);
+	}
+
+
+	async _getTransferWalletBalance(includeUnconfirmedTransactions) {
 		let balance = await this._transferWallet.getBalance();
-		if (includeNotYetVerifiedTransactions) {
+		if (includeUnconfirmedTransactions) {
 			let transferWalletAddress = this._transferWallet.address;
 			await this.mempool._evictTransactions(); // ensure that already validated transactions are ignored
 			let transactions = Object.values(this._mempool._transactions);
@@ -112,14 +122,22 @@ class Cashlink {
 	}
 
 
-	async getAmount(includeNotYetVerifiedTransactions, includeFees) {
-		let amount = await this._getTransferWalletBalance(includeNotYetVerifiedTransactions);
-		if (includeFees) {
-			return amount;
-		} else {
-			let fee = calculateFee(amount, true);
-			return Math.max(0, amount - fee);
+	async getAmount(unconfirmed) {
+		let amountWithFee = await this._getTransferWalletBalance(unconfirmed);
+		return this._determineAmountWithoutFees(amountWithFee);
+	}
+
+
+	async _onTransactionAdded(transaction) {
+		if (transaction.recipientAddr.equals(this._transferWallet.address)
+			|| (await transaction.senderAddr()).equals(this._transferWallet.address)) {
+			this.fire('unconfirmed-amount-changed', await this.getAmount(true));
 		}
+	}
+
+
+	async _onBalanceChanged(balance) {
+		this.fire('confirmed-amount-changed', this._determineAmountWithoutFees(balance));
 	}
 
 
@@ -137,13 +155,15 @@ class Cashlink {
 			// special case: creator wants to take out all of the money. In this case, the feeToRecipient doesn't
 			// matter anymore. Note that we need to handle this special case, as the feeToRecipient does not
 			// neccessarily need to be 0 if newAmount is 0 (there can be a minimum fee).
-			return this.receiveMoney();
+			return this.receiveConfirmedMoney();
 		}
 
 		// we have to provide the fee that will apply when sending from transferWallet to recipient:
 		let feeToRecipient = Cashlink.calculateFee(newAmount);
 		let newAmountIncludingFees = newAmount + feeToRecipient;
-		let difference = newAmountIncludingFees - await this.getAmount(true, true);
+		// the new amount with fees minus the current amount with fees. In the current amount we also consider
+		// the unconfirmed transactions to really update upon the most recent value
+		let difference = newAmountIncludingFees - await this._getTransferWalletBalance(true);
 		if (difference === 0) {
 			// nothing to do
 			return Promise.resolve();
@@ -162,14 +182,15 @@ class Cashlink {
 	}
 
 
-	async receiveMoney() {
-		let amountWithFee = await this.getAmount(false, true);
-		let fee = Cashlink.calculateFee(amountWithFee, true);
-		let amountWithoutFee = Math.max(0, amountWithFee - fee);
+	async receiveConfirmedMoney() {
+		// get out the money. Only the confirmed amount, because we can't request unconfirmed money.
+		let amountWithFee = await this._getTransferWalletBalance(false);
+		let amountWithoutFee = this._determineAmountWithoutFees(amountWithFee);
 		if (amountWithoutFee === 0) {
-			throw Error("The cashlink does not contain money anymore");
+			throw Error("The cashlink does not contain confirmed money");
 		}
-		return this._transferWallet.transferFunds(this._myWallet.address, difference-fee, fee);
+		let fee = amountWithFee - amountWithoutFee;
+		return this._transferWallet.transferFunds(this._myWallet.address, amountWithoutFee, fee);
 	}
 
 
