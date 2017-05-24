@@ -1,8 +1,9 @@
 class Cashlink {
-	constructor(myWallet, transferWallet, senderAddress) {
+	constructor(myWallet, transferWallet, senderAddress, mempool) {
 		this._myWallet = myWallet;
 		this._transferWallet = transferWallet;
 		this._senderAddress = senderAddress;
+		this._mempool = mempool
 	}
 
 
@@ -13,7 +14,7 @@ class Cashlink {
 		}
 		let senderAddress = myWallet.address;
 		let transferWallet = await Wallet.createVolatile(accounts, mempool);
-		let cashlink = new Cashlink(myWallet, transferWallet, senderAddress);
+		let cashlink = new Cashlink(myWallet, transferWallet, senderAddress, mempool);
 		await cashlink.setAmount(amount);
 		return cashlink;
 	}
@@ -34,7 +35,7 @@ class Cashlink {
 			publicKey: keys[1]
 		};
 		let transferWallet = await new Wallet(keys, accounts, mempool);
-		return new Cashlink(myWallet, transferWallet, senderAddress);
+		return new Cashlink(myWallet, transferWallet, senderAddress, mempool);
 	}
 
 
@@ -87,8 +88,32 @@ class Cashlink {
 	}
 
 
-	async getAmount(includeFees) {
-		let amount = await this._transferWallet.getBalance();
+	async _getTransferWalletBalance(includeNotYetVerifiedTransactions) {
+		let balance = await this._transferWallet.getBalance();
+		if (includeNotYetVerifiedTransactions) {
+			let transferWalletAddress = this._transferWallet.address;
+			await this.mempool._evictTransactions(); // ensure that already validated transactions are ignored
+			let transactions = Object.values(this._mempool._transactions);
+			// the senderAddr() returns a promise. So execute all the promises in parallel with Promise.all
+			let senderAddresses = await Promise.all(transactions.map(transaction => transaction.senderAddr()));
+			for (let i=0; i<transactions.length; ++i) {
+				let transaction = transactions[i];
+				let senderAddr = senderAddresses[i];
+				let recipientAddr = transaction.recipientAddr; // this can be retrieved directly without promise
+				if (recipientAddr.equals(transferWalletAddress)) {
+					// money sent to the transfer wallet
+					balance += transaction.value;
+				} else if (senderAddr.equals(transferWalletAddress)) {
+					balance -= transaction.value + transaction.fee;
+				}
+			}
+		}
+		return balance;
+	}
+
+
+	async getAmount(includeNotYetVerifiedTransactions, includeFees) {
+		let amount = await this._getTransferWalletBalance(includeNotYetVerifiedTransactions);
 		if (includeFees) {
 			return amount;
 		} else {
@@ -118,7 +143,7 @@ class Cashlink {
 		// we have to provide the fee that will apply when sending from transferWallet to recipient:
 		let feeToRecipient = Cashlink.calculateFee(newAmount);
 		let newAmountIncludingFees = newAmount + feeToRecipient;
-		let difference = newAmountIncludingFees - await this.getAmount(true);
+		let difference = newAmountIncludingFees - await this.getAmount(true, true);
 		if (difference === 0) {
 			// nothing to do
 			return Promise.resolve();
@@ -138,7 +163,7 @@ class Cashlink {
 
 
 	async receiveMoney() {
-		let amountWithFee = await this.getAmount(true);
+		let amountWithFee = await this.getAmount(false, true);
 		let fee = Cashlink.calculateFee(amountWithFee, true);
 		let amountWithoutFee = Math.max(0, amountWithFee - fee);
 		if (amountWithoutFee === 0) {
