@@ -6,8 +6,10 @@ class Cashlink {
 		this._mempool = mempool;
 		mempool.on('transaction-added', this._onTransactionAdded.bind(this));
 		accounts.on(transferWallet.address, this._onBalanceChanged.bind(this));
-		this.getAmount(true).then(unconfirmedAmount => this.fire('unconfirmed-amount-changed', unconfirmedAmount));
-		this.getAmount(false).then(confirmedAmount => this.fire('confirmed-amount-changed', confirmedAmount));
+		this.getAmount(true).then(unconfirmedAmount => this.fire('unconfirmed-amount-changed', unconfirmedAmount),
+			_ => throw Error('Couln\'t retrieve the current amount'));
+		this.getAmount(false).then(confirmedAmount => this.fire('confirmed-amount-changed', confirmedAmount),
+			_ => throw Error('Couln\'t retrieve the current amount'));
 	}
 
 
@@ -55,7 +57,7 @@ class Cashlink {
 			throw Error("Only can send integer amounts > 0");
 		}
 		const MIN_FEE = 1;
-		const MAX_FEE = 2e4; // 2 nimiqs
+		const MAX_FEE = 2 * Policy.SATOSHIS_PER_COIN;
 		const FEE_PERCENTAGE = 0.001;
 		if (!feeAlreadyIncluded) {
 			return Math.max(MIN_FEE, Math.min(MAX_FEE, Math.floor(amount * FEE_PERCENTAGE)));
