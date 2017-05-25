@@ -7,9 +7,9 @@ class Cashlink {
 		mempool.on('transaction-added', this._onTransactionAdded.bind(this));
 		accounts.on(transferWallet.address, this._onBalanceChanged.bind(this));
 		this.getAmount(true).then(unconfirmedAmount => this.fire('unconfirmed-amount-changed', unconfirmedAmount),
-			_ => throw Error('Couln\'t retrieve the current amount'));
+			e => { throw Error('Couln\'t retrieve the current amount') });
 		this.getAmount(false).then(confirmedAmount => this.fire('confirmed-amount-changed', confirmedAmount),
-			_ => throw Error('Couln\'t retrieve the current amount'));
+			e => { throw Error('Couln\'t retrieve the current amount') });
 	}
 
 
@@ -57,7 +57,7 @@ class Cashlink {
 			throw Error("Only can send integer amounts > 0");
 		}
 		const MIN_FEE = 1;
-		const MAX_FEE = 2 * Policy.SATOSHIS_PER_COIN;
+		const MAX_FEE = 2 * 1e8; // TODO build the newest nimiq.js and then use Policy.coinsToSatoshis
 		const FEE_PERCENTAGE = 0.001;
 		if (!feeAlreadyIncluded) {
 			return Math.max(MIN_FEE, Math.min(MAX_FEE, Math.floor(amount * FEE_PERCENTAGE)));
@@ -75,9 +75,11 @@ class Cashlink {
 				// amount = ceil(x) + floor(x * FEE_PERCENTAGE) which can't be directly solved for x.
 				let closeAmountWithoutFee = Math.round(amount / (1+FEE_PERCENTAGE));
 				// the amountWithoutFeeClose either already is the correct integer amount or should be close.
-				// So check the close integer values:
+				// So check the close integer values. Actually testing with an offset in {-1,0,1} should be
+				// enough but as we anyways return immediately when we found the correct solution, we just
+				// make the interval [-1000,1000]
 				let offset=0;
-				while (offset<30) {
+				while (offset<1000) {
 					let testAmountWithoutFee = closeAmountWithoutFee+offset;
 					if (testAmountWithoutFee + Cashlink.calculateFee(testAmountWithoutFee) === amount) {
 						return amount - testAmountWithoutFee;
@@ -207,3 +209,4 @@ class Cashlink {
 		return baseUrl + senderAddressBase64 + '#' + privateKeyBase64 + '#' + publicKeyBase64;
 	}
 }
+Class.register(Cashlink);
