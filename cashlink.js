@@ -1,10 +1,9 @@
 class Cashlink extends Observable {
 	/** Typically you'll not use the constructor directly, but the static createCashlink methods */
-	constructor(myWallet, transferWallet, senderAddress, accounts, mempool) {
+	constructor(myWallet, transferWallet, accounts, mempool) {
 		super();
 		this._myWallet = myWallet;
 		this._transferWallet = transferWallet;
-		this._senderAddress = senderAddress;
 		this._mempool = mempool;
 		mempool.on('transaction-added', this._onTransactionAdded.bind(this));
 		accounts.on(transferWallet.address, this._onBalanceChanged.bind(this));
@@ -16,9 +15,8 @@ class Cashlink extends Observable {
 			// all amounts and fees are always integers to ensure floating point precision.
 			throw Error("Only can send integer amounts > 0");
 		}
-		let senderAddress = myWallet.address;
 		let transferWallet = await Wallet.createVolatile(accounts, mempool);
-		let cashlink = new Cashlink(myWallet, transferWallet, senderAddress, accounts, mempool);
+		let cashlink = new Cashlink(myWallet, transferWallet, accounts, mempool);
 		await cashlink.setAmount(amount);
 		// TODO fire the change events
 		return cashlink;
@@ -27,12 +25,11 @@ class Cashlink extends Observable {
 
 	static async cashlinkFromUrl(url, myWallet, accounts, mempool) {
 		let urlParts = url.split('#');
-		if (urlParts.length != 4) {
+		if (urlParts.length != 3) {
 			throw Error("Not a valid cashlink.");
 		}
-		let senderAddress = BufferUtils.fromBase64(urlParts[1]);
-		let privateKey = BufferUtils.fromBase64(urlParts[2]);
-		let publicKey = BufferUtils.fromBase64(urlParts[3]);
+		let privateKey = BufferUtils.fromBase64(urlParts[1]);
+		let publicKey = BufferUtils.fromBase64(urlParts[2]);
 		// TODO check that private and public key belong together
 		let keys = await Promise.all([Crypto.importPrivate(privateKey), Crypto.importPublic(publicKey)]);
 		keys = {
@@ -40,12 +37,7 @@ class Cashlink extends Observable {
 			publicKey: keys[1]
 		};
 		let transferWallet = await new Wallet(keys, accounts, mempool);
-		return new Cashlink(myWallet, transferWallet, senderAddress, accounts, mempool);
-	}
-
-
-	wasCreatedByMe() {
-		return this._myWallet.address.equals(this._senderAddress);
+		return new Cashlink(myWallet, transferWallet, accounts, mempool);
 	}
 
 
@@ -144,79 +136,28 @@ class Cashlink extends Observable {
 
 
 	async _onBalanceChanged(balance) {
+		balance = balance.value || 0;
 		this.fire('confirmed-amount-changed', this._determineAmountWithoutFees(balance));
 	}
 
 
-	/** Set the amount to be sent by the cashlink. Can also be changed afterwards, by adding more money or transfering
-	money back. Note that by EVERY call of this method a transaction is performed and a fee applies. */
-	async setAmount(newAmount) {
-		if (!this.wasCreatedByMe()) {
-			throw Error("Only the initial creator of the cashlink is supposed to change the amount.");
+	/** Set the amount to be sent by the cashlink. */
+	async setAmount(amount) {
+		if (await this._getTransferWalletBalance(true) !== 0) {
+			throw Error("Amount can't be updated after it has been set.");
 		}
-		if (!NumberUtils.isUint64(newAmount)) {
+		if (!NumberUtils.isUint64(amount)) {
 			// all amounts and fees are always integers to ensure floating point precision.
 			throw Error("Only non-negative integer amounts allowed.");
 		}
-
 		// we have to provide the fee that will apply when sending from transferWallet to recipient.
-		// Note that in the case that the creator sets the newAmount to 0 to take back his money, there
-		// is no transaction to the recipient anymore and feeToRecipient is correctly 0.
-		let feeToRecipient = Cashlink.calculateFee(newAmount);
-		let newAmountIncludingFees = newAmount + feeToRecipient;
-		// the new amount with fees minus the current amount with fees. In the current amount we also consider
-		// the unconfirmed transactions to really update upon the most recent value
-		let difference = newAmountIncludingFees - await this._getTransferWalletBalance(true);
-		if (difference === 0) {
-			// nothing to do
-			return;
-		} else if (difference > 0) {
-			// we (the original creator of the cashlink) have to add more money to the transfer wallet.
-			let fee = Cashlink.calculateFee(difference);
-			if ((await this._myWallet.getBalance()).value < difference+fee) {
-				throw Error("You can't send more money then you own");
-			}
-			await this._myWallet.transferFunds(this._transferWallet.address, difference, fee);
-			return;
-		} else { // difference < 0
-			// return money back from the transferWallet to us (the original creator of the cashlink).
-			difference = Math.abs(difference);
-			// A fee has to be payed for the transaction from the transferWallet. As we can't take the fee from
-			// the money the recipient should get, we take it from the money that should be returned to us.
-			let fee = Cashlink.calculateFee(difference, true);
-			if (difference <= await this._getTransferWalletBalance(false)) {
-				await this._transferWallet.transferFunds(this._myWallet.address, difference-fee, fee);
-				return;
-			} else {
-				// the transfer wallet didn't get the unconfirmed money yet to transfer it back.
-				// Wait for the confirmation
-				return new Promise(function(resolve, reject) {
-					// the nimiq observable unfortunately doesn't have a once or off method so we have a flag
-					let executed = false;
-					this.on('confirmed-amount-changed', async function() {
-						if (executed) {
-							return;
-						}
-						executed = true;
-						try {
-							if (difference <= await this._getTransferWalletBalance(false)) {
-								await this._transferWallet.transferFunds(this._myWallet.address, difference-fee, fee);
-								resolve();
-							}
-						} catch(e) {
-							reject();
-						}
-					});
-					setTimeout(function() {
-						if (executed) {
-							return;
-						}
-						executed = true;
-						reject();
-					}, 1000 * 60 * 5); // timeout after 5 minutes
-				});
-			}
+		let feeToRecipient = Cashlink.calculateFee(amount);
+		let transferWalletBalance = amount + feeToRecipient;
+		let feeToTransferWallet = Cashlink.calculateFee(transferWalletBalance);
+		if ((await this._myWallet.getBalance()).value < transferWalletBalance+feeToTransferWallet) {
+			throw Error("You can't send more money then you own");
 		}
+		await this._myWallet.transferFunds(this._transferWallet.address, transferWalletBalance, feeToTransferWallet);
 	}
 
 
@@ -234,13 +175,12 @@ class Cashlink extends Observable {
 
 	async getUrl() {
 		const baseUrl = 'https://nimiq.com/receive#';
-		// the url contains the private and public key of the transferWallet and the sender address which will
+		// the url contains the private and public key of the transferWallet which will
 		// be encoded by Base64. Base 64 contains A-Z,a-z,0-9,+,/,= so we can use # as a separator.
-		let senderAddressBase64 = BufferUtils.toBase64(this._senderAddress);
 		let privateKeyBase64 =
 			await this._transferWallet.exportPrivate().then(privateKey => BufferUtils.toBase64(privateKey));
 		let publicKeyBase64 = BufferUtils.toBase64(this._transferWallet.publicKey);
-		return baseUrl + senderAddressBase64 + '#' + privateKeyBase64 + '#' + publicKeyBase64;
+		return baseUrl + privateKeyBase64 + '#' + publicKeyBase64;
 	}
 }
 Class.register(Cashlink);

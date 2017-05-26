@@ -105,7 +105,7 @@ describe("Cashlink", function() {
 		it('can be done by constructor', function(done) {
 			async function test() {
 				let transferWallet = await Wallet.createVolatile(accounts, mempool);
-				let cashlink = new Cashlink(senderWallet, transferWallet, senderWallet.address, accounts, mempool);
+				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
 				expect(cashlink.constructor).toBe(Cashlink);
 			}
 			test().then(done, done.fail);
@@ -114,7 +114,7 @@ describe("Cashlink", function() {
 		it('can set an amount', function(done) {
 			async function test() {
 				let transferWallet = await Wallet.createVolatile(accounts, mempool);
-				let cashlink = new Cashlink(senderWallet, transferWallet, senderWallet.address, accounts, mempool);
+				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
 				await cashlink.setAmount(5);
 				expect(await cashlink.getAmount(true)).toBe(5);
 			}
@@ -124,7 +124,7 @@ describe("Cashlink", function() {
 		it('can detect if you want to spend more coins then you have', function(done) {
 			async function test() {
 				let transferWallet = await Wallet.createVolatile(accounts, mempool);
-				let cashlink = new Cashlink(senderWallet, transferWallet, senderWallet.address, accounts, mempool);
+				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
 				await cashlink.setAmount(100);
 			}
 			test().then(done.fail, function(e) { // fail if we don't get an exception or not the one we want
@@ -141,7 +141,7 @@ describe("Cashlink", function() {
 			async function test() {
 				let transferWallet = await Wallet.createVolatile(accounts, mempool);
 				let recipientWallet = await Wallet.createVolatile(accounts, mempool);
-				let cashlink = new Cashlink(recipientWallet, transferWallet, senderWallet.address, accounts, mempool);
+				let cashlink = new Cashlink(recipientWallet, transferWallet, accounts, mempool);
 				// put some already confirmed money on the transferWallet
 				let fee = Cashlink.calculateFee(50);
 				await accounts._updateBalance(await accounts._tree.transaction(),
