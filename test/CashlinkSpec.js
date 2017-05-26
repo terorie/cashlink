@@ -25,7 +25,7 @@ describe("Cashlink", function() {
 
 	describe("fee calculation", function() {
 		it('should be able to detect invalid amounts', function() {
-			let invalidAmounts = [0, -8, 8.8];
+			let invalidAmounts = [-8, 8.8];
 			for (var i=0; i<invalidAmounts.length; ++i) {
 				expect(function() {
 					Cashlink.calculateFee(invalidAmounts[i]);
@@ -34,7 +34,8 @@ describe("Cashlink", function() {
 		});
 
 
-		it("should be able to calculate a valid fee for an amount", function() {
+		it("should be able to calculate a fee for an amount", function() {
+			expect(Cashlink.calculateFee(0)).toBe(0);
 			for (var i=0; i<amountsToTest.length; ++i) {
 				let fee = Cashlink.calculateFee(amountsToTest[i]);
 				expect(fee).toBeDefined();
@@ -46,6 +47,7 @@ describe("Cashlink", function() {
 
 
 		it("should be able to calculate a valid fee for an amount already including the fees", function() {
+			expect(Cashlink.calculateFee(0)).toBe(0, true);
 			for (var i=0; i<amountsToTest.length; ++i) {
 				let fee = Cashlink.calculateFee(amountsToTest[i], true);
 				expect(fee).toBeDefined();
@@ -67,10 +69,10 @@ describe("Cashlink", function() {
 
 
 
-	describe('cashlink creation', function() {
+	describe('creation', function() {
 		let accounts, blockchain, mempool, senderWallet;
 		beforeEach(function(done) {
-			(async function() {
+			async function init() {
 				accounts = await Accounts.createVolatile();
 				blockchain = await Blockchain.createVolatile(accounts);
 				mempool = new Mempool(blockchain, accounts);
@@ -78,7 +80,8 @@ describe("Cashlink", function() {
 				// give the sender some money that he can put on the cashlink:
 				await accounts._updateBalance(await accounts._tree.transaction(),
 					senderWallet.address, 50, (a, b) => a + b);
-			})().then(done, done.fail);
+			}
+			init().then(done, done.fail);
 		});
 
 		it('should be able to detect invalid amounts', function(done) {
@@ -99,83 +102,64 @@ describe("Cashlink", function() {
 			expectNothing();
 		});
 
-		it('can be created by constructor', function(done) {
-			(async function() {
+		it('can be done by constructor', function(done) {
+			async function test() {
 				let transferWallet = await Wallet.createVolatile(accounts, mempool);
 				let cashlink = new Cashlink(senderWallet, transferWallet, senderWallet.address, accounts, mempool);
 				expect(cashlink.constructor).toBe(Cashlink);
-			})().then(done, done.fail);
+			}
+			test().then(done, done.fail);
 		});
 
-		it('can be set an amount', function(done) {
-			(async function() {
+		it('can set an amount', function(done) {
+			async function test() {
 				let transferWallet = await Wallet.createVolatile(accounts, mempool);
 				let cashlink = new Cashlink(senderWallet, transferWallet, senderWallet.address, accounts, mempool);
 				await cashlink.setAmount(5);
 				expect(await cashlink.getAmount(true)).toBe(5);
-			})().then(done, done.fail);
+			}
+			test().then(done, done.fail);
+		});
+
+		it('can detect if you want to spend more coins then you have', function(done) {
+			async function test() {
+				let transferWallet = await Wallet.createVolatile(accounts, mempool);
+				let cashlink = new Cashlink(senderWallet, transferWallet, senderWallet.address, accounts, mempool);
+				await cashlink.setAmount(100);
+			}
+			test().then(done.fail, function(e) { // fail if we don't get an exception or not the one we want
+				if (e.message === "You can't send more money then you own") {
+					done();
+				} else {
+					done.fail(e);
+				}
+			});
+			expectNothing();
+		});
+
+		it('can send the receiver the correct amount', function(done) {
+			async function test() {
+				let transferWallet = await Wallet.createVolatile(accounts, mempool);
+				let recipientWallet = await Wallet.createVolatile(accounts, mempool);
+				let cashlink = new Cashlink(recipientWallet, transferWallet, senderWallet.address, accounts, mempool);
+				// put some already confirmed money on the transferWallet
+				let fee = Cashlink.calculateFee(50);
+				await accounts._updateBalance(await accounts._tree.transaction(),
+					transferWallet.address, 50+fee, (a, b) => a + b);
+				expect((await transferWallet.getBalance()).value).toBe(50+fee);
+				expect(await cashlink.getAmount()).toBe(50);
+				await cashlink.receiveConfirmedMoney();
+				// the money will be sent to the recipientWallet. Check its yet unconfirmed saldo
+				let transactions = Object.values(mempool._transactions);
+				expect(transactions.length).toBe(1);
+				var transaction = transactions[0];
+				expect(String(await transaction.senderAddr())).toBe(String(transferWallet.address));
+				expect(String(transaction.recipientAddr)).toBe(String(recipientWallet.address));
+				expect(transaction.value).toBe(50);
+				expect(transaction.fee).toBe(fee);
+			}
+			test().then(done, done.fail);
 		});
 	});
 
 });
-
-/*
-describe("Player", function() {
-	var player;
-	var song;
-
-	beforeEach(function() {
-		player = new Player();
-		song = new Song();
-	});
-
-	it("should be able to play a Song", function() {
-		player.play(song);
-		expect(player.currentlyPlayingSong).toEqual(song);
-
-		//demonstrates use of custom matcher
-		expect(player).toBePlaying(song);
-	});
-
-	describe("when song has been paused", function() {
-		beforeEach(function() {
-			player.play(song);
-			player.pause();
-		});
-
-		it("should indicate that the song is currently paused", function() {
-			expect(player.isPlaying).toBeFalsy();
-
-			// demonstrates use of 'not' with a custom matcher
-			expect(player).not.toBePlaying(song);
-		});
-
-		it("should be possible to resume", function() {
-			player.resume();
-			expect(player.isPlaying).toBeTruthy();
-			expect(player.currentlyPlayingSong).toEqual(song);
-		});
-	});
-
-	// demonstrates use of spies to intercept and test method calls
-	it("tells the current song if the user has made it a favorite", function() {
-		spyOn(song, 'persistFavoriteStatus');
-
-		player.play(song);
-		player.makeFavorite();
-
-		expect(song.persistFavoriteStatus).toHaveBeenCalledWith(true);
-	});
-
-	//demonstrates use of expected exceptions
-	describe("#resume", function() {
-		it("should throw an exception if song is already playing", function() {
-			player.play(song);
-
-			expect(function() {
-				player.resume();
-			}).toThrowError("song is already playing");
-		});
-	});
-});
-*/

@@ -51,9 +51,13 @@ class Cashlink extends Observable {
 
 	static calculateFee(amount, feeAlreadyIncluded) {
 		// Also more complicated fees are supprted, e.g. the percentage of the fees could be based on the amount
-		if (!NumberUtils.isUint64(amount) || amount===0) {
+		if (!NumberUtils.isUint64(amount)) {
 			// all amounts and fees are always integers to ensure floating point precision.
-			throw Error("Only can send integer amounts > 0");
+			throw Error("Amounts (and fees) are always non-negative integer. Got "+amount);
+		}
+		if (amount === 0) {
+			// actually a transaction over 0 coins is illegal, but it still makes sense to show a fee of 0
+			return 0;
 		}
 		const MIN_FEE = 1;
 		const MAX_FEE = Policy.coinsToSatoshis(2);
@@ -96,16 +100,13 @@ class Cashlink extends Observable {
 
 
 	_determineAmountWithoutFees(amountWithFees) {
-		if (amountWithFees === 0) {
-			return 0;
-		}
 		let fee = Cashlink.calculateFee(amountWithFees, true);
 		return Math.max(0, amountWithFees - fee);
 	}
 
 
 	async _getTransferWalletBalance(includeUnconfirmedTransactions) {
-		let balance = await this._transferWallet.getBalance();
+		let balance = (await this._transferWallet.getBalance()).value || 0;
 		if (includeUnconfirmedTransactions) {
 			let transferWalletAddress = this._transferWallet.address;
 			await this._mempool._evictTransactions(); // ensure that already validated transactions are ignored
@@ -157,14 +158,10 @@ class Cashlink extends Observable {
 			// all amounts and fees are always integers to ensure floating point precision.
 			throw Error("Only non-negative integer amounts allowed.");
 		}
-		if (newAmount === 0) {
-			// special case: creator wants to take out all of the money. In this case, the feeToRecipient doesn't
-			// matter anymore. Note that we need to handle this special case, as the feeToRecipient does not
-			// neccessarily need to be 0 if newAmount is 0 (there can be a minimum fee).
-			return this.receiveConfirmedMoney();
-		}
 
-		// we have to provide the fee that will apply when sending from transferWallet to recipient:
+		// we have to provide the fee that will apply when sending from transferWallet to recipient.
+		// Note that in the case that the creator sets the newAmount to 0 to take back his money, there
+		// is no transaction to the recipient anymore and feeToRecipient is correctly 0.
 		let feeToRecipient = Cashlink.calculateFee(newAmount);
 		let newAmountIncludingFees = newAmount + feeToRecipient;
 		// the new amount with fees minus the current amount with fees. In the current amount we also consider
@@ -172,18 +169,53 @@ class Cashlink extends Observable {
 		let difference = newAmountIncludingFees - await this._getTransferWalletBalance(true);
 		if (difference === 0) {
 			// nothing to do
-			return Promise.resolve();
+			return;
 		} else if (difference > 0) {
 			// we (the original creator of the cashlink) have to add more money to the transfer wallet.
-			return this._myWallet.transferFunds(this._transferWallet.address, difference,
-				Cashlink.calculateFee(difference));
+			let fee = Cashlink.calculateFee(difference);
+			if ((await this._myWallet.getBalance()).value < difference+fee) {
+				throw Error("You can't send more money then you own");
+			}
+			await this._myWallet.transferFunds(this._transferWallet.address, difference, fee);
+			return;
 		} else { // difference < 0
 			// return money back from the transferWallet to us (the original creator of the cashlink).
 			difference = Math.abs(difference);
 			// A fee has to be payed for the transaction from the transferWallet. As we can't take the fee from
 			// the money the recipient should get, we take it from the money that should be returned to us.
 			let fee = Cashlink.calculateFee(difference, true);
-			return this._transferWallet.transferFunds(this._myWallet.address, difference-fee, fee);
+			if (difference <= await this._getTransferWalletBalance(false)) {
+				await this._transferWallet.transferFunds(this._myWallet.address, difference-fee, fee);
+				return;
+			} else {
+				// the transfer wallet didn't get the unconfirmed money yet to transfer it back.
+				// Wait for the confirmation
+				return new Promise(function(resolve, reject) {
+					// the nimiq observable unfortunately doesn't have a once or off method so we have a flag
+					let executed = false;
+					this.on('confirmed-amount-changed', async function() {
+						if (executed) {
+							return;
+						}
+						executed = true;
+						try {
+							if (difference <= await this._getTransferWalletBalance(false)) {
+								await this._transferWallet.transferFunds(this._myWallet.address, difference-fee, fee);
+								resolve();
+							}
+						} catch(e) {
+							reject();
+						}
+					});
+					setTimeout(function() {
+						if (executed) {
+							return;
+						}
+						executed = true;
+						reject();
+					}, 1000 * 60 * 5); // timeout after 5 minutes
+				});
+			}
 		}
 	}
 
