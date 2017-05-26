@@ -1,15 +1,13 @@
-class Cashlink {
+class Cashlink extends Observable {
+	/** Typically you'll not use the constructor directly, but the static createCashlink methods */
 	constructor(myWallet, transferWallet, senderAddress, accounts, mempool) {
+		super();
 		this._myWallet = myWallet;
 		this._transferWallet = transferWallet;
 		this._senderAddress = senderAddress;
 		this._mempool = mempool;
 		mempool.on('transaction-added', this._onTransactionAdded.bind(this));
 		accounts.on(transferWallet.address, this._onBalanceChanged.bind(this));
-		this.getAmount(true).then(unconfirmedAmount => this.fire('unconfirmed-amount-changed', unconfirmedAmount),
-			e => { throw Error('Couln\'t retrieve the current amount') });
-		this.getAmount(false).then(confirmedAmount => this.fire('confirmed-amount-changed', confirmedAmount),
-			e => { throw Error('Couln\'t retrieve the current amount') });
 	}
 
 
@@ -22,6 +20,7 @@ class Cashlink {
 		let transferWallet = await Wallet.createVolatile(accounts, mempool);
 		let cashlink = new Cashlink(myWallet, transferWallet, senderAddress, accounts, mempool);
 		await cashlink.setAmount(amount);
+		// TODO fire the change events
 		return cashlink;
 	}
 
@@ -57,7 +56,7 @@ class Cashlink {
 			throw Error("Only can send integer amounts > 0");
 		}
 		const MIN_FEE = 1;
-		const MAX_FEE = 2 * 1e8; // TODO build the newest nimiq.js and then use Policy.coinsToSatoshis
+		const MAX_FEE = Policy.coinsToSatoshis(2);
 		const FEE_PERCENTAGE = 0.001;
 		if (!feeAlreadyIncluded) {
 			return Math.max(MIN_FEE, Math.min(MAX_FEE, Math.floor(amount * FEE_PERCENTAGE)));
@@ -97,7 +96,10 @@ class Cashlink {
 
 
 	_determineAmountWithoutFees(amountWithFees) {
-		let fee = calculateFee(amountWithFees, true);
+		if (amountWithFees === 0) {
+			return 0;
+		}
+		let fee = Cashlink.calculateFee(amountWithFees, true);
 		return Math.max(0, amountWithFees - fee);
 	}
 
@@ -106,7 +108,7 @@ class Cashlink {
 		let balance = await this._transferWallet.getBalance();
 		if (includeUnconfirmedTransactions) {
 			let transferWalletAddress = this._transferWallet.address;
-			await this.mempool._evictTransactions(); // ensure that already validated transactions are ignored
+			await this._mempool._evictTransactions(); // ensure that already validated transactions are ignored
 			let transactions = Object.values(this._mempool._transactions);
 			// the senderAddr() returns a promise. So execute all the promises in parallel with Promise.all
 			let senderAddresses = await Promise.all(transactions.map(transaction => transaction.senderAddr()));
