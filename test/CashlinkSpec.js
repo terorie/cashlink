@@ -89,6 +89,40 @@ describe("Cashlink", function() {
 			async function test() {
 				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
 				expect(cashlink.constructor).toBe(Cashlink);
+				expect(cashlink._myWallet).toBe(senderWallet);
+				expect(cashlink._transferWallet).toBe(transferWallet);
+				expect(cashlink._mempool).toBe(mempool);
+			}
+			test().then(done, done.fail);
+		});
+
+		it('can be done with a given amount', function(done) {
+			async function test() {
+				let cashlink = await Cashlink.createCashlink(7, senderWallet, accounts, mempool);
+				expect(cashlink.constructor).toBe(Cashlink);
+				expect(cashlink._myWallet).toBe(senderWallet);
+				expect(cashlink._transferWallet).toBeDefined();
+				expect(cashlink._mempool).toBe(mempool);
+				expect(await cashlink.getAmount(true)).toBe(7);
+			}
+			test().then(done, done.fail);
+		});
+
+		it('can be done from an URL', function(done) {
+			async function test() {
+				let privateKeyBase64 = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgDY59pCeEvCf7oW7pyZ5x4OjbWSbFQ0TfqQhsveOfNoOhRANCAAS9CxXZMwUrLeWg/ftEacd9CSKnA9S4u5xNf826hLClF2e7/BPgjuE6BREV17FtBeT/8Rzp9a0etK6y4if/xt6A";
+				let publicKeyBase64 = "BL0LFdkzBSst5aD9+0Rpx30JIqcD1Li7nE1/zbqEsKUXZ7v8E+CO4ToFERXXsW0F5P/xHOn1rR60rrLiJ//G3oA=";
+				let url = "https://nimiq.com/receive#" + privateKeyBase64 + "#" + publicKeyBase64;
+				let recipientWallet = await Wallet.createVolatile(accounts, mempool);
+				let cashlink = await Cashlink.cashlinkFromUrl(url, recipientWallet, accounts, mempool);
+				expect(cashlink.constructor).toBe(Cashlink);
+				expect(cashlink._myWallet).toBe(recipientWallet);
+				expect(cashlink._transferWallet).toBeDefined();
+				expect(cashlink._mempool).toBe(mempool);
+				let importedPrivateKeyBase64 = BufferUtils.toBase64(await cashlink._transferWallet.exportPrivate());
+				let importedPublicKeyBase64 = BufferUtils.toBase64(cashlink._transferWallet.publicKey);
+				expect(importedPrivateKeyBase64).toBe(privateKeyBase64);
+				expect(importedPublicKeyBase64).toBe(publicKeyBase64);
 			}
 			test().then(done, done.fail);
 		});
@@ -99,11 +133,11 @@ describe("Cashlink", function() {
 		it('should be able to detect invalid amounts', function(done) {
 			let invalidAmounts = [0, -8, 8.8];
 			let promises = invalidAmounts.map(function(amount) {
-				return Cashlink.createCashlink(amount, senderWallet, accounts, mempool)
-					.then(function() {
+				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
+				return cashlink.setAmount(amount).then(function() {
 						return Promise.reject(amount+' is an illegal amount and should throw an exception');
 					}, function(e) {
-						if (e.message === 'Only can send integer amounts > 0') {
+						if (e.message === 'Only non-negative integer amounts allowed.') {
 							return Promise.resolve();
 						} else {
 							throw e; // another unexpected exception
@@ -156,8 +190,8 @@ describe("Cashlink", function() {
 	});
 
 	
-	describe('amount sending', function() {
-		it('can send the receiver the correct amount', function(done) {
+	describe('amount recieving', function() {
+		it('can recieve the correct amount', function(done) {
 			async function test() {
 				let recipientWallet = await Wallet.createVolatile(accounts, mempool);
 				let cashlink = new Cashlink(recipientWallet, transferWallet, accounts, mempool);

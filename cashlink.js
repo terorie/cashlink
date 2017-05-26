@@ -11,10 +11,6 @@ class Cashlink extends Observable {
 
 
 	static async createCashlink(amount, myWallet, accounts, mempool) {
-		if (!NumberUtils.isUint64(amount) || amount===0) {
-			// all amounts and fees are always integers to ensure floating point precision.
-			throw Error("Only can send integer amounts > 0");
-		}
 		let transferWallet = await Wallet.createVolatile(accounts, mempool);
 		let cashlink = new Cashlink(myWallet, transferWallet, accounts, mempool);
 		await cashlink.setAmount(amount);
@@ -25,7 +21,7 @@ class Cashlink extends Observable {
 
 	static async cashlinkFromUrl(url, myWallet, accounts, mempool) {
 		let urlParts = url.split('#');
-		if (urlParts.length != 3) {
+		if (urlParts.length != 3 || urlParts[0].indexOf('nimiq.com/receive')===-1) {
 			throw Error("Not a valid cashlink.");
 		}
 		let privateKey = BufferUtils.fromBase64(urlParts[1]);
@@ -146,7 +142,7 @@ class Cashlink extends Observable {
 		if (await this._getTransferWalletBalance(true) !== 0) {
 			throw Error("Amount can't be updated after it has been set.");
 		}
-		if (!NumberUtils.isUint64(amount)) {
+		if (!NumberUtils.isUint64(amount) || amount===0) {
 			// all amounts and fees are always integers to ensure floating point precision.
 			throw Error("Only non-negative integer amounts allowed.");
 		}
@@ -177,8 +173,7 @@ class Cashlink extends Observable {
 		const baseUrl = 'https://nimiq.com/receive#';
 		// the url contains the private and public key of the transferWallet which will
 		// be encoded by Base64. Base 64 contains A-Z,a-z,0-9,+,/,= so we can use # as a separator.
-		let privateKeyBase64 =
-			await this._transferWallet.exportPrivate().then(privateKey => BufferUtils.toBase64(privateKey));
+		let privateKeyBase64 = BufferUtils.toBase64(await this._transferWallet.exportPrivate());
 		let publicKeyBase64 = BufferUtils.toBase64(this._transferWallet.publicKey);
 		return baseUrl + privateKeyBase64 + '#' + publicKeyBase64;
 	}
