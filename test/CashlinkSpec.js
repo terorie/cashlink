@@ -22,6 +22,21 @@ describe("Cashlink", function() {
 	for (var i=1; i<10; ++i) {
 		amountsToTest.push(Math.pow(7, i));
 	}
+	let accounts, blockchain, mempool, senderWallet, transferWallet;
+	beforeEach(function(done) {
+		async function init() {
+			accounts = await Accounts.createVolatile();
+			blockchain = await Blockchain.createVolatile(accounts);
+			mempool = new Mempool(blockchain, accounts);
+			senderWallet = await Wallet.createVolatile(accounts, mempool);
+			transferWallet = await Wallet.createVolatile(accounts, mempool);
+			// give the sender some money that he can put on the cashlink:
+			await accounts._updateBalance(await accounts._tree.transaction(),
+				senderWallet.address, 50, (a, b) => a + b);
+		}
+		init().then(done, done.fail);
+	});
+		
 
 	describe("fee calculation", function() {
 		it('should be able to detect invalid amounts', function() {
@@ -70,20 +85,17 @@ describe("Cashlink", function() {
 
 
 	describe('creation', function() {
-		let accounts, blockchain, mempool, senderWallet;
-		beforeEach(function(done) {
-			async function init() {
-				accounts = await Accounts.createVolatile();
-				blockchain = await Blockchain.createVolatile(accounts);
-				mempool = new Mempool(blockchain, accounts);
-				senderWallet = await Wallet.createVolatile(accounts, mempool);
-				// give the sender some money that he can put on the cashlink:
-				await accounts._updateBalance(await accounts._tree.transaction(),
-					senderWallet.address, 50, (a, b) => a + b);
+		it('can be done by constructor', function(done) {
+			async function test() {
+				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
+				expect(cashlink.constructor).toBe(Cashlink);
 			}
-			init().then(done, done.fail);
+			test().then(done, done.fail);
 		});
+	});
 
+	
+	describe('amount sending', function() {
 		it('should be able to detect invalid amounts', function(done) {
 			let invalidAmounts = [0, -8, 8.8];
 			let promises = invalidAmounts.map(function(amount) {
@@ -102,28 +114,8 @@ describe("Cashlink", function() {
 			expectNothing();
 		});
 
-		it('can be done by constructor', function(done) {
-			async function test() {
-				let transferWallet = await Wallet.createVolatile(accounts, mempool);
-				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
-				expect(cashlink.constructor).toBe(Cashlink);
-			}
-			test().then(done, done.fail);
-		});
-
-		it('can set an amount', function(done) {
-			async function test() {
-				let transferWallet = await Wallet.createVolatile(accounts, mempool);
-				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
-				await cashlink.setAmount(5);
-				expect(await cashlink.getAmount(true)).toBe(5);
-			}
-			test().then(done, done.fail);
-		});
-
 		it('can detect if you want to spend more coins then you have', function(done) {
 			async function test() {
-				let transferWallet = await Wallet.createVolatile(accounts, mempool);
 				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
 				await cashlink.setAmount(100);
 			}
@@ -137,9 +129,36 @@ describe("Cashlink", function() {
 			expectNothing();
 		});
 
+		it('can detect if you want to update the amount', function(done) {
+			async function test() {
+				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
+				await cashlink.setAmount(10);
+				await cashlink.setAmount(20);
+			}
+			test().then(done.fail, function(e) { // fail if we don't get an exception or not the one we want
+				if (e.message === "Amount can't be updated after it has been set.") {
+					done();
+				} else {
+					done.fail(e);
+				}
+			});
+			expectNothing();
+		});
+
+		it('can set an amount', function(done) {
+			async function test() {
+				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
+				await cashlink.setAmount(5);
+				expect(await cashlink.getAmount(true)).toBe(5);
+			}
+			test().then(done, done.fail);
+		});
+	});
+
+	
+	describe('amount sending', function() {
 		it('can send the receiver the correct amount', function(done) {
 			async function test() {
-				let transferWallet = await Wallet.createVolatile(accounts, mempool);
 				let recipientWallet = await Wallet.createVolatile(accounts, mempool);
 				let cashlink = new Cashlink(recipientWallet, transferWallet, accounts, mempool);
 				// put some already confirmed money on the transferWallet
@@ -161,5 +180,4 @@ describe("Cashlink", function() {
 			test().then(done, done.fail);
 		});
 	});
-
 });
