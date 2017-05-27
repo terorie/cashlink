@@ -14,7 +14,6 @@ class Cashlink extends Observable {
 		let transferWallet = await Wallet.createVolatile(accounts, mempool);
 		let cashlink = new Cashlink(myWallet, transferWallet, accounts, mempool);
 		await cashlink.setAmount(amount);
-		// TODO fire the change events
 		return cashlink;
 	}
 
@@ -165,7 +164,7 @@ class Cashlink extends Observable {
 			throw Error("The cashlink does not contain confirmed money");
 		}
 		let fee = amountWithFee - amountWithoutFee;
-		return this._transferWallet.transferFunds(this._myWallet.address, amountWithoutFee, fee);
+		await this._transferWallet.transferFunds(this._myWallet.address, amountWithoutFee, fee);
 	}
 
 

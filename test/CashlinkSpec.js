@@ -110,8 +110,11 @@ describe("Cashlink", function() {
 
 		it('can be done from an URL', function(done) {
 			async function test() {
-				let privateKeyBase64 = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgDY59pCeEvCf7oW7pyZ5x4OjbWSbFQ0TfqQhsveOfNoOhRANCAAS9CxXZMwUrLeWg/ftEacd9CSKnA9S4u5xNf826hLClF2e7/BPgjuE6BREV17FtBeT/8Rzp9a0etK6y4if/xt6A";
-				let publicKeyBase64 = "BL0LFdkzBSst5aD9+0Rpx30JIqcD1Li7nE1/zbqEsKUXZ7v8E+CO4ToFERXXsW0F5P/xHOn1rR60rrLiJ//G3oA=";
+				// put some confirmed money on the transfer wallet
+				accounts._updateBalance(await accounts._tree.transaction(),
+					transferWallet.address, 50, (a, b) => a + b);
+				let privateKeyBase64 = BufferUtils.toBase64(await transferWallet.exportPrivate());
+				let publicKeyBase64 = BufferUtils.toBase64(transferWallet.publicKey);
 				let url = "https://nimiq.com/receive#" + privateKeyBase64 + "#" + publicKeyBase64;
 				let recipientWallet = await Wallet.createVolatile(accounts, mempool);
 				let cashlink = await Cashlink.cashlinkFromUrl(url, recipientWallet, accounts, mempool);
@@ -123,8 +126,34 @@ describe("Cashlink", function() {
 				let importedPublicKeyBase64 = BufferUtils.toBase64(cashlink._transferWallet.publicKey);
 				expect(importedPrivateKeyBase64).toBe(privateKeyBase64);
 				expect(importedPublicKeyBase64).toBe(publicKeyBase64);
+				expect((await cashlink._transferWallet.getBalance()).value).toBe(50);
 			}
 			test().then(done, done.fail);
+		});
+
+		it('can detect invalid URLs', function(done) {
+			async function test() {
+				let privateKeyBase64 = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgDY59pCeEvCf7oW7pyZ5x4OjbWSbFQ0TfqQhsveOfNoOhRANCAAS9CxXZMwUrLeWg/ftEacd9CSKnA9S4u5xNf826hLClF2e7/BPgjuE6BREV17FtBeT/8Rzp9a0etK6y4if/xt6A";
+				let publicKeyBase64 = "BL0LFdkzBSst5aD9+0Rpx30JIqcD1Li7nE1/zbqEsKUXZ7v8E+CO4ToFERXXsW0F5P/xHOn1rR60rrLiJ//G3oA=";
+				let invalidUrls = ['https://nimiq.com/receive#'+privateKeyBase64+'#'+publicKeyBase64+'#anotherpart',
+					'https://nimiq.com/receive#',
+					'www.google.com'];
+				let recipientWallet = await Wallet.createVolatile(accounts, mempool);
+				for (let i=0, url; url=invalidUrls[i]; ++i) {
+					try {
+						await Cashlink.cashlinkFromUrl(url, recipientWallet, accounts, mempool);
+						done.fail("Shouldn't accept invalid URL: " + url);
+					} catch(e) {
+						if (e.message === "Not a valid cashlink.") {
+							continue;
+						} else {
+							done.fail(e); // an unexpected exception
+						}
+					}
+				}
+			}
+			test().then(done, done.fail);
+			expectNothing();
 		});
 	});
 
@@ -142,7 +171,7 @@ describe("Cashlink", function() {
 						} else {
 							throw e; // another unexpected exception
 						}
-					});
+					}, done.fail);
 			});
 			Promise.all(promises).then(done, done.fail);
 			expectNothing();
@@ -213,5 +242,74 @@ describe("Cashlink", function() {
 			}
 			test().then(done, done.fail);
 		});
+	});
+
+	function createEventPromise(target, eventType) {
+		return new Promise(function(resolve, reject) {
+			target.on(eventType, arg => {
+				resolve(arg);
+			});
+			setTimeout(reject, 30000); // timeout after 30 seconds
+		});
+	}
+
+	describe('events', function() {
+		it('are fired for an unconfirmed transaction', function(done) {
+			async function test() {
+				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
+				let eventPromise = createEventPromise(cashlink, 'unconfirmed-amount-changed');
+				cashlink.setAmount(10);
+				expect(await eventPromise).toBe(10);
+			}
+			test().then(done, done.fail);
+		});
+
+		it('are fired for a confirmed transaction', function(done) {
+			async function test() {
+				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
+				let eventPromise = createEventPromise(cashlink, 'confirmed-amount-changed');
+				// put some already confirmed money on the transferWallet
+				let fee = Cashlink.calculateFee(50);
+				accounts._updateBalance(await accounts._tree.transaction(),
+					transferWallet.address, 50+fee, (a, b) => a + b);
+				expect(await eventPromise).toBe(50);
+			}
+			test().then(done, done.fail);
+		});
+	});
+
+	it('can perform a full round trip', function(done) {
+		async function test() {
+			let amount = 10;
+			let senderCashlink = await Cashlink.createCashlink(amount, senderWallet, accounts, mempool);
+			let confirmedBalancePromise = createEventPromise(senderCashlink, 'confirmed-amount-changed');
+			expect(await senderCashlink.getAmount(true)).toBe(amount);
+			// lets mine the block to confirm the transaction
+			let miner = new Miner(blockchain, mempool, senderWallet.address);
+			spyOn(BlockUtils, 'isProofOfWork').and.returnValue(true);
+			miner.startWork();
+			expect(await confirmedBalancePromise).toBe(amount);
+			miner.stopWork();
+			expect(await senderCashlink.getAmount()).toBe(amount);
+			// send the cashlink over url
+			let url = await senderCashlink.getUrl();
+			let recipientWallet = await Wallet.createVolatile(accounts, mempool);
+			let recipientCashlink = await Cashlink.cashlinkFromUrl(url, recipientWallet, accounts, mempool);
+			expect(await recipientCashlink.getAmount()).toBe(amount);
+			// now lets recieve the money
+			let unconfirmedBalancePromise = createEventPromise(recipientCashlink, 'unconfirmed-amount-changed');
+			confirmedBalancePromise = createEventPromise(recipientCashlink, 'confirmed-amount-changed');
+			let recipientBalanceChangedPromise = createEventPromise(accounts, recipientWallet.address);
+			recipientCashlink.receiveConfirmedMoney();
+			expect(await unconfirmedBalancePromise).toBe(0);
+			// mine again to confirm the transaction
+			miner.startWork();
+			expect(await confirmedBalancePromise).toBe(0);
+			miner.stopWork();
+			expect(await senderCashlink.getAmount()).toBe(0);
+			// check that the recipient got the money
+			expect((await recipientBalanceChangedPromise).value).toBe(amount);
+		}
+		test().then(done, done.fail);
 	});
 });
