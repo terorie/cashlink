@@ -36,7 +36,7 @@ class Cashlink extends Observable {
 	}
 
 
-	static calculateFee(amount, feeAlreadyIncluded) {
+	static calculateSingleFee(amount, feeAlreadyIncluded) {
 		// Also more complicated fees are supprted, e.g. the percentage of the fees could be based on the amount
 		if (!NumberUtils.isUint64(amount)) {
 			// all amounts and fees are always integers to ensure floating point precision.
@@ -71,7 +71,7 @@ class Cashlink extends Observable {
 				let offset=0;
 				while (offset<1000) {
 					let testAmountWithoutFee = closeAmountWithoutFee+offset;
-					if (testAmountWithoutFee + Cashlink.calculateFee(testAmountWithoutFee) === amount) {
+					if (testAmountWithoutFee + Cashlink.calculateSingleFee(testAmountWithoutFee) === amount) {
 						return amount - testAmountWithoutFee;
 					}
 					offset *= -1;
@@ -86,8 +86,17 @@ class Cashlink extends Observable {
 	}
 
 
+	static calculateTotalFee(amount) {
+		// total fee for putting money on the chashlink and then taking it out again
+		let feeToRecipient = Cashlink.calculateSingleFee(amount);
+		let transferWalletBalance = amount + feeToRecipient;
+		let feeToTransferWallet = Cashlink.calculateSingleFee(transferWalletBalance);
+		return feeToRecipient + feeToTransferWallet;
+	}
+
+
 	_determineAmountWithoutFees(amountWithFees) {
-		let fee = Cashlink.calculateFee(amountWithFees, true);
+		let fee = Cashlink.calculateSingleFee(amountWithFees, true);
 		return Math.max(0, amountWithFees - fee);
 	}
 
@@ -146,9 +155,9 @@ class Cashlink extends Observable {
 			throw Error("Only non-negative integer amounts allowed.");
 		}
 		// we have to provide the fee that will apply when sending from transferWallet to recipient.
-		let feeToRecipient = Cashlink.calculateFee(amount);
+		let feeToRecipient = Cashlink.calculateSingleFee(amount);
 		let transferWalletBalance = amount + feeToRecipient;
-		let feeToTransferWallet = Cashlink.calculateFee(transferWalletBalance);
+		let feeToTransferWallet = Cashlink.calculateSingleFee(transferWalletBalance);
 		if ((await this._myWallet.getBalance()).value < transferWalletBalance+feeToTransferWallet) {
 			throw Error("You can't send more money then you own");
 		}

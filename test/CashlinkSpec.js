@@ -43,16 +43,16 @@ describe("Cashlink", function() {
 			let invalidAmounts = [-8, 8.8];
 			for (var i=0; i<invalidAmounts.length; ++i) {
 				expect(function() {
-					Cashlink.calculateFee(invalidAmounts[i]);
+					Cashlink.calculateSingleFee(invalidAmounts[i]);
 				}).toThrow();
 			}
 		});
 
 
 		it("should be able to calculate a fee for an amount", function() {
-			expect(Cashlink.calculateFee(0)).toBe(0);
+			expect(Cashlink.calculateSingleFee(0)).toBe(0);
 			for (var i=0; i<amountsToTest.length; ++i) {
-				let fee = Cashlink.calculateFee(amountsToTest[i]);
+				let fee = Cashlink.calculateSingleFee(amountsToTest[i]);
 				expect(fee).toBeDefined();
 				expect(fee).not.toBeNaN();
 				expect(fee).toBeGreaterThanOrEqual(0);
@@ -62,9 +62,9 @@ describe("Cashlink", function() {
 
 
 		it("should be able to calculate a valid fee for an amount already including the fees", function() {
-			expect(Cashlink.calculateFee(0)).toBe(0, true);
+			expect(Cashlink.calculateSingleFee(0)).toBe(0, true);
 			for (var i=0; i<amountsToTest.length; ++i) {
-				let fee = Cashlink.calculateFee(amountsToTest[i], true);
+				let fee = Cashlink.calculateSingleFee(amountsToTest[i], true);
 				expect(fee).toBeDefined();
 				expect(fee).not.toBeNaN();
 				expect(fee).toBeGreaterThanOrEqual(0);
@@ -75,8 +75,8 @@ describe("Cashlink", function() {
 
 		it("should be able to extract the exact fee from an amount already including the fees", function() {
 			for (var i=0; i<amountsToTest.length; ++i) {
-				let fee = Cashlink.calculateFee(amountsToTest[i]);
-				let extractedFee = Cashlink.calculateFee(amountsToTest[i]+fee, true);
+				let fee = Cashlink.calculateSingleFee(amountsToTest[i]);
+				let extractedFee = Cashlink.calculateSingleFee(amountsToTest[i]+fee, true);
 				expect(extractedFee).toBe(fee);
 			}
 		});
@@ -213,6 +213,11 @@ describe("Cashlink", function() {
 				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
 				await cashlink.setAmount(5);
 				expect(await cashlink.getAmount(true)).toBe(5);
+				let transferWalletBalance = 5 + Cashlink.calculateSingleFee(5);
+				let transaction = Object.values(mempool._transactions)[0];
+				expect(transaction.value+transaction.fee).toBe(5 + Cashlink.calculateTotalFee(5));
+				expect(transaction.value).toBe(transferWalletBalance);
+				expect(transaction.fee).toBe(Cashlink.calculateSingleFee(transferWalletBalance));
 			}
 			test().then(done, done.fail);
 		});
@@ -225,7 +230,7 @@ describe("Cashlink", function() {
 				let recipientWallet = await Wallet.createVolatile(accounts, mempool);
 				let cashlink = new Cashlink(recipientWallet, transferWallet, accounts, mempool);
 				// put some already confirmed money on the transferWallet
-				let fee = Cashlink.calculateFee(50);
+				let fee = Cashlink.calculateSingleFee(50);
 				await accounts._updateBalance(await accounts._tree.transaction(),
 					transferWallet.address, 50+fee, (a, b) => a + b);
 				expect((await transferWallet.getBalance()).value).toBe(50+fee);
@@ -269,7 +274,7 @@ describe("Cashlink", function() {
 				let cashlink = new Cashlink(senderWallet, transferWallet, accounts, mempool);
 				let eventPromise = createEventPromise(cashlink, 'confirmed-amount-changed');
 				// put some already confirmed money on the transferWallet
-				let fee = Cashlink.calculateFee(50);
+				let fee = Cashlink.calculateSingleFee(50);
 				accounts._updateBalance(await accounts._tree.transaction(),
 					transferWallet.address, 50+fee, (a, b) => a + b);
 				expect(await eventPromise).toBe(50);
