@@ -9,18 +9,30 @@ function expectNothing() {
 }
 
 describe("Cashlink", function() {
-	let amountsToTest = [];
-	for (var i=1; i<10; ++i) {
-		amountsToTest.push(i);
+	let testAmounts = [];
+	for (var i=2; i<10; ++i) {
+		testAmounts.push(i);
 	}
 	for (var i=10; i<100; i+=10) {
-		amountsToTest.push(i);
+		testAmounts.push(i);
 	}
 	for (var i=888; i<8880; i+=888) {
-		amountsToTest.push(i);
+		testAmounts.push(i);
 	}
 	for (var i=1; i<10; ++i) {
-		amountsToTest.push(Math.pow(7, i));
+		testAmounts.push(Math.pow(7, i));
+	}
+	for (var i=1; i<10; ++i) {
+		testAmounts.push(Nimiq.Policy.coinsToSatoshis(i));
+	}
+	for (var i=10; i<100; i+=10) {
+		testAmounts.push(Nimiq.Policy.coinsToSatoshis(i));
+	}
+	for (var i=888; i<8880; i+=888) {
+		testAmounts.push(Nimiq.Policy.coinsToSatoshis(i));
+	}
+	for (var i=1; i<10; ++i) {
+		testAmounts.push(Nimiq.Policy.coinsToSatoshis(Math.pow(7, i)));
 	}
 	let $, transferWallet;
 
@@ -56,12 +68,15 @@ describe("Cashlink", function() {
 
 		it('can be done with a given amount', function(done) {
 			async function test() {
-				await fillWallet($.wallet, 50);
-				let cashlink = await Cashlink.createCashlink($, 7, 1);
-				expect(cashlink.constructor).toBe(Cashlink);
-				expect(cashlink.$).toBe($);
-				expect(cashlink._transferWallet).toBeDefined();
-				expect(await cashlink.getAmount(true)).toBe(7-1);
+				for (let amount of testAmounts) {
+					$.wallet = await Nimiq.Wallet.createVolatile();
+					await fillWallet($.wallet, amount);
+					let cashlink = await Cashlink.createCashlink($, amount, 1);
+					expect(cashlink.constructor).toBe(Cashlink);
+					expect(cashlink.$).toBe($);
+					expect(cashlink._transferWallet).toBeDefined();
+					expect(await cashlink.getAmount(true)).toBe(amount-1);
+				}
 			}
 			test().then(done, done.fail);
 		});
@@ -92,14 +107,14 @@ describe("Cashlink", function() {
 		it('should be able to detect invalid fees', function(done) {
 			async function test() {
 				await fillWallet($.wallet, 50);
-				let invalidFees = [-8, 8.8];
+				let invalidFees = [-8, 8.8, 50, 51];
 				for (let fee of invalidFees) {
 					try {
 						await Cashlink.createCashlink($, 7, fee);
 						done.fail(fee + ' is an illegal fee and should throw an exception');
 						return;
 					} catch(e) {
-						if (e.message === 'Only non-negative integer fees allowed.') {
+						if (e.message === 'Illegal fee.') {
 							continue;
 						} else {
 							done.fail('Unexpected exception.');
@@ -161,21 +176,25 @@ describe("Cashlink", function() {
 	describe('amount recieving', function() {
 		it('can recieve the correct amount', function(done) {
 			async function test() {
-				let cashlink = new Cashlink($, transferWallet);
-				// put some already confirmed money on the transferWallet
-				await fillWallet(transferWallet, 50);
-				expect((await $.accounts.getBalance(transferWallet.address)).value).toBe(50);
-				expect(await cashlink.getAmount()).toBe(50);
-				await cashlink.accept(3);
-				// the money will be sent to the recipientWallet. Check its yet unconfirmed saldo
-				let transactions = Object.values($.mempool._transactions);
-				expect(transactions.length).toBe(1);
-				var transaction = transactions[0];
-				expect((await transaction.getSenderAddr()).equals(transferWallet.address)).toBeTruthy();
-				expect(transaction.recipientAddr.equals($.wallet.address)).toBeTruthy();
-				expect(transaction.value).toBe(50 - 3);
-				expect(transaction.fee).toBe(3);
-				expect(await cashlink.getAmount(true)).toBe(0);
+				for (let amount of testAmounts) {
+					transferWallet = await Nimiq.Wallet.createVolatile();
+					let cashlink = new Cashlink($, transferWallet);
+					// put some already confirmed money on the transferWallet
+					await fillWallet(transferWallet, amount);
+					expect((await $.accounts.getBalance(transferWallet.address)).value).toBe(amount);
+					expect(await cashlink.getAmount()).toBe(amount);
+					await cashlink.accept(1);
+					// the money will be sent to the recipientWallet. Check its yet unconfirmed saldo
+					let transactions = Object.values($.mempool._transactions);
+					var transaction = transactions[transactions.length-1]; // this works well in chrome but
+					// there is no guarantee that this works (that we get the newest transaction). If the test
+					// fails for you, you might to change this part
+					expect((await transaction.getSenderAddr()).equals(transferWallet.address)).toBeTruthy();
+					expect(transaction.recipientAddr.equals($.wallet.address)).toBeTruthy();
+					expect(transaction.value).toBe(amount - 1);
+					expect(transaction.fee).toBe(1);
+					expect(await cashlink.getAmount(true)).toBe(0);
+				}
 			}
 			test().then(done, done.fail);
 		});

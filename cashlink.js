@@ -16,8 +16,8 @@ class Cashlink extends Nimiq.Observable {
 			// all amounts and fees are always integers to ensure floating point precision.
 			throw Error("Only positive integer amounts allowed.");
 		}
-		if (!NumberUtils.isUint64(fee)) {
-			throw Error("Only non-negative integer fees allowed.");
+		if (!NumberUtils.isUint64(fee) || fee>=amount) {
+			throw Error("Illegal fee.");
 		}
 		let balance = await $.accounts.getBalance($.wallet.address);
 		if (balance.value < amount) {
@@ -85,7 +85,6 @@ class Cashlink extends Nimiq.Observable {
 
 
 	_onBalanceChanged(account) {
-		console.log(account);
 		this.fire('confirmed-amount-changed', account.balance.value);
 	}
 
