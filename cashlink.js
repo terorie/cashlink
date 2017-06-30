@@ -21,7 +21,7 @@ class Cashlink extends Nimiq.Observable {
 		}
 		let balance = await $.accounts.getBalance($.wallet.address);
 		if (balance.value < amount) {
-			throw Error("You can't send more money then you own");
+			throw Error("You can't send more money than you own");
 		}
 		// we do amount-fee because the recipient has to pay the fee
 		let transaction = await $.wallet.createTransaction(transferWallet.address, amount-fee, fee, balance.nonce);
