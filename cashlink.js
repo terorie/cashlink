@@ -12,11 +12,11 @@ class Cashlink extends Nimiq.Observable {
 	static async createCashlink($, amount, fee = 0) {
 		let transferWallet = await Nimiq.Wallet.createVolatile();
 		let cashlink = new Cashlink($, transferWallet);
-		if (!NumberUtils.isUint64(amount) || amount===0) {
+		if (!Nimiq.NumberUtils.isUint64(amount) || amount===0) {
 			// all amounts and fees are always integers to ensure floating point precision.
 			throw Error("Only positive integer amounts allowed.");
 		}
-		if (!NumberUtils.isUint64(fee) || fee>=amount) {
+		if (!Nimiq.NumberUtils.isUint64(fee) || fee>=amount) {
 			throw Error("Illegal fee.");
 		}
 		let balance = await $.accounts.getBalance($.wallet.address);
@@ -37,7 +37,7 @@ class Cashlink extends Nimiq.Observable {
 		}
 		let privateKey = Nimiq.PrivateKey.unserialize(BufferUtils.fromBase64(urlParts[1]));
 		let keyPair = await Nimiq.KeyPair.derive(privateKey);
-		let transferWallet = await new Wallet(keyPair);
+		let transferWallet = await new Nimiq.Wallet(keyPair);
 		return new Cashlink($, transferWallet);
 	}
 
@@ -90,7 +90,7 @@ class Cashlink extends Nimiq.Observable {
 
 
 	getUrl() {
-		return Cashlink.BASE_URL + '#' + BufferUtils.toBase64(this._transferWallet.keyPair.privateKey.serialize());
+		return Cashlink.BASE_URL + '#' + Nimiq.BufferUtils.toBase64(this._transferWallet.keyPair.privateKey.serialize());
 	}
 }
 Cashlink.BASE_URL = 'nimiq.com/receive';
