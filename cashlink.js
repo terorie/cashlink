@@ -123,5 +123,21 @@ class Cashlink extends Nimiq.Observable {
 	getUrl() {
 		return Cashlink.BASE_URL + '#key=' + Nimiq.BufferUtils.toBase64(this._transferWallet.keyPair.privateKey.serialize()) + '&value=' + this._value;
 	}
+
+	wasFunded() {
+		return this.$.accounts.getBalance(this._transferWallet.address).then(res => {
+			// considered funded if account has been used
+			// might have been emptied already and still returns true
+			return res.nonce > 0;
+		});
+	}
+
+	wasEmptied() {
+		return this.$.accounts.getBalance(this._transferWallet.address).then(res => {
+			// considered emptied if value is 0 and account has been used
+			// alternative would be res.value < this._value
+			return res.nonce > 0 && res.value === 0;
+		});
+	}
 }
 Cashlink.BASE_URL = 'nimiq.com/cashlinks';
