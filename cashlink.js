@@ -1,10 +1,10 @@
-class Cashlink extends Nimiq.Observable {
+class Cashlink {
 	/** Typically you'll not use the constructor directly, but the static createCashlink methods */
 	constructor($, transferWallet) {
-		super();
 		this.$ = $;
 		this._transferWallet = transferWallet;
 		this._value = 0;
+		this._eventListeners = {};
 		this.$.mempool.on('transaction-added', this._onTransactionAdded.bind(this));
 		this.$.accounts.on(transferWallet.address, this._onBalanceChanged.bind(this));
 	}
@@ -101,6 +101,24 @@ class Cashlink extends Nimiq.Observable {
 				});
 			}
 			return balance;
+		});
+	}
+
+
+	on(type, callback) {
+		if (!(type in this._eventListeners)) {
+			this._eventListeners[type] = [];
+		}
+		this._eventListeners[type].push(callback);
+	}
+
+
+	fire(type, arg) {
+		if (!(type in this._eventListeners)) {
+			return;
+		}
+		this._eventListeners[type].forEach(function(callback) {
+			callback(arg);
 		});
 	}
 
