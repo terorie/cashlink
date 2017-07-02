@@ -4,31 +4,34 @@ class Cashlink extends Nimiq.Observable {
 		super();
 		this.$ = $;
 		this._transferWallet = transferWallet;
+		this._value = 0;
 		this.$.mempool.on('transaction-added', this._onTransactionAdded.bind(this));
 		this.$.accounts.on(transferWallet.address, this._onBalanceChanged.bind(this));
 	}
 
-
-	static createCashlink($, amount, fee = 0) {
+	static createCashlink($) {
 		return Nimiq.Wallet.createVolatile().then(transferWallet => {
-			let cashlink = new Cashlink($, transferWallet);
-			if (!Nimiq.NumberUtils.isUint64(amount) || amount===0) {
-				// all amounts and fees are always integers to ensure floating point precision.
-				throw Error("Only positive integer amounts allowed.");
-			}
-			if (!Nimiq.NumberUtils.isUint64(fee) || fee>=amount) {
-				throw Error("Illegal fee.");
-			}
+			return new Cashlink($, transferWallet);
+		});
+	}
 
-			return $.accounts.getBalance($.wallet.address).then(balance => {
-				if (balance.value < amount) {
-					throw Error("You can't send more money than you own");
-				}
-				// we do amount-fee because the recipient has to pay the fee
-				return $.wallet.createTransaction(transferWallet.address, amount-fee, fee, balance.nonce).then(transaction => {
-					return $.mempool.pushTransaction(transaction).then(() => {
-						return cashlink;
-					});
+	fund(amount, fee = 0) {
+		if (!Nimiq.NumberUtils.isUint64(amount) || amount===0) {
+			// all amounts and fees are always integers to ensure floating point precision.
+			throw Error("Only positive integer amounts allowed.");
+		}
+		if (!Nimiq.NumberUtils.isUint64(fee) || fee>=amount) {
+			throw Error("Illegal fee.");
+		}
+
+		return this.$.accounts.getBalance(this.$.wallet.address).then(balance => {
+			if (balance.value < amount) {
+				throw Error("You can't send more money than you own");
+			}
+			// we do amount-fee because the recipient has to pay the fee
+			return this.$.wallet.createTransaction(this._transferWallet.address, amount-fee, fee, balance.nonce).then(transaction => {
+				return this.$.mempool.pushTransaction(transaction).then(() => {
+					this._value = amount - fee;
 				});
 			});
 		});
@@ -40,10 +43,23 @@ class Cashlink extends Nimiq.Observable {
 		if (urlParts[0].indexOf(Cashlink.BASE_URL)===-1) {
 			throw Error("Not a valid cashlink.");
 		}
-		let privateKey = Nimiq.PrivateKey.unserialize(BufferUtils.fromBase64(urlParts[1]));
+		let assignments = urlParts[1].split('&');
+		let vars = {};
+		for (let assignment of assignments) {
+			let [key, value] = assignment.split('=', 2);
+			vars[key] = value;
+		}
+
+		if (!vars.key) {
+			throw Error("Not a valid cashlink.");
+		}
+
+		let privateKey = Nimiq.PrivateKey.unserialize(BufferUtils.fromBase64(vars.key));
 		return Nimiq.KeyPair.derive(privateKey).then(keyPair => {
 			return new Nimiq.Wallet(keyPair).then(transferWallet => {
-				return new Cashlink($, transferWallet);
+				let cashlink = new Cashlink($, transferWallet);
+				cashlink._value = vars.value;
+				return cashlink;
 			});
 		});
 	}
@@ -105,7 +121,7 @@ class Cashlink extends Nimiq.Observable {
 
 
 	getUrl() {
-		return Cashlink.BASE_URL + '#' + Nimiq.BufferUtils.toBase64(this._transferWallet.keyPair.privateKey.serialize());
+		return Cashlink.BASE_URL + '#key=' + Nimiq.BufferUtils.toBase64(this._transferWallet.keyPair.privateKey.serialize()) + '&value=' + this._value;
 	}
 }
 Cashlink.BASE_URL = 'nimiq.com/cashlinks';

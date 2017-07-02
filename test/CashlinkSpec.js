@@ -71,7 +71,8 @@ describe("Cashlink", function() {
 				for (let amount of testAmounts) {
 					$.wallet = await Nimiq.Wallet.createVolatile();
 					await fillWallet($.wallet, amount);
-					let cashlink = await Cashlink.createCashlink($, amount, 1);
+					let cashlink = await Cashlink.createCashlink($);
+					await cashlink.fund(amount, 1);
 					expect(cashlink.constructor).toBe(Cashlink);
 					expect(cashlink.$).toBe($);
 					expect(cashlink._transferWallet).toBeDefined();
@@ -87,7 +88,8 @@ describe("Cashlink", function() {
 				let invalidAmounts = [0, -8, 8.8];
 				for (let amount of invalidAmounts) {
 					try {
-						await Cashlink.createCashlink($, amount, 1);
+						let cashlink = await Cashlink.createCashlink($);
+						await cashlink.fund(amount, 1);
 						done.fail(amount + ' is an illegal amount and should throw an exception');
 						return;
 					} catch(e) {
@@ -110,7 +112,8 @@ describe("Cashlink", function() {
 				let invalidFees = [-8, 8.8, 50, 51];
 				for (let fee of invalidFees) {
 					try {
-						await Cashlink.createCashlink($, 7, fee);
+						let cashlink = await Cashlink.createCashlink($);
+						await cashlink.fund(7, fee);
 						done.fail(fee + ' is an illegal fee and should throw an exception');
 						return;
 					} catch(e) {
@@ -130,7 +133,8 @@ describe("Cashlink", function() {
 		it('can detect if you want to spend more then you have', function(done) {
 			async function test() {
 				await fillWallet($.wallet, 5);
-				await Cashlink.createCashlink($, 7, 1);
+				let cashlink = await Cashlink.createCashlink($);
+				await cashlink.fund(7, 1);
 			}
 			test().then(done.fail, done);
 			expectNothing();
@@ -140,7 +144,7 @@ describe("Cashlink", function() {
 			async function test() {
 				await fillWallet(transferWallet, 50);
 				let privateKeyBase64 = Nimiq.BufferUtils.toBase64(transferWallet.keyPair.privateKey.serialize());
-				let url = Cashlink.BASE_URL +'#' + privateKeyBase64;
+				let url = Cashlink.BASE_URL +'#key=' + privateKeyBase64;
 				let recipientWallet = await Nimiq.Wallet.createVolatile();
 				let cashlink = await Cashlink.decodeCashlink($, url);
 				expect(cashlink.constructor).toBe(Cashlink);
