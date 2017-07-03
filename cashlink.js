@@ -150,15 +150,6 @@ class Cashlink {
 	}
 
 
-	wasFunded() {
-		return this.$.accounts.getBalance(this._transferWallet.address).then(res => {
-			// considered funded if account has been used
-			// might have been emptied already and still returns true
-			return res.nonce > 0;
-		});
-	}
-
-
 	wasEmptied() {
 		return this.$.accounts.getBalance(this._transferWallet.address).then(res => {
 			// considered emptied if value is 0 and account has been used
