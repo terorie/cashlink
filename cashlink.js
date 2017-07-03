@@ -39,21 +39,7 @@ class Cashlink {
 
 
 	static decodeCashlink($, url) {
-		let urlParts = url.split('#');
-		if (urlParts[0].indexOf(Cashlink.BASE_URL)===-1) {
-			throw Error("Not a valid cashlink.");
-		}
-		let assignments = urlParts[1].split('&');
-		let vars = {};
-		for (let assignment of assignments) {
-			let [key, value] = assignment.split('=', 2);
-			vars[key] = value;
-		}
-
-		if (!vars.key) {
-			throw Error("Not a valid cashlink.");
-		}
-
+		var vars = Cashlink.parseCashlinkUrl(url);
 		let privateKey = Nimiq.PrivateKey.unserialize(BufferUtils.fromBase64(vars.key));
 		return Nimiq.KeyPair.derive(privateKey).then(keyPair => {
 			return new Nimiq.Wallet(keyPair).then(transferWallet => {
@@ -139,8 +125,30 @@ class Cashlink {
 
 
 	getUrl() {
-		return Cashlink.BASE_URL + '#key=' + Nimiq.BufferUtils.toBase64(this._transferWallet.keyPair.privateKey.serialize()) + '&value=' + this._value;
+		return Cashlink.BASE_URL + '/#' 
+			+ (this._value? 'value='+this._value+'&' : '')
+			+ 'key=' + Nimiq.BufferUtils.toBase64(this._transferWallet.keyPair.privateKey.serialize());
 	}
+
+
+	static parseCashlinkUrl(url) {
+		let urlParts = url.split('#');
+		if (urlParts[0].indexOf(Cashlink.BASE_URL)===-1) {
+			throw Error("Not a valid cashlink.");
+		}
+		let assignments = urlParts[1].split('&');
+		let vars = {};
+		for (let assignment of assignments) {
+			let [key, value] = assignment.split('=', 2);
+			vars[key] = value;
+		}
+		if (!vars.key) {
+			// private key is requiered
+			throw Error("Not a valid cashlink.");
+		}
+		return vars;
+	}
+
 
 	wasFunded() {
 		return this.$.accounts.getBalance(this._transferWallet.address).then(res => {
@@ -149,6 +157,7 @@ class Cashlink {
 			return res.nonce > 0;
 		});
 	}
+
 
 	wasEmptied() {
 		return this.$.accounts.getBalance(this._transferWallet.address).then(res => {
