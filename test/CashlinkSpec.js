@@ -234,6 +234,7 @@ describe("Cashlink", function() {
 				let eventPromise = createEventPromise(cashlink, 'confirmed-amount-changed');
 				// put some already confirmed money on the transferWallet
 				await fillWallet(transferWallet, 50);
+				$.blockchain.fire('head-changed'); // simulate a mined block that contains our transaction
 				expect(await eventPromise).toBe(50);
 			}
 			test().then(done, done.fail);
