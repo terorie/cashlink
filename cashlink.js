@@ -40,7 +40,7 @@ class Cashlink {
 
 	static decodeCashlink($, url) {
 		var vars = Cashlink.parseCashlinkUrl(url);
-		let privateKey = Nimiq.PrivateKey.unserialize(Nimiq.BufferUtils.fromBase64(vars.key));
+		let privateKey = Nimiq.PrivateKey.unserialize(Nimiq.BufferUtils.fromBase64Url(vars.key));
 		return Nimiq.KeyPair.derive(privateKey).then(keyPair => {
 			return new Nimiq.Wallet(keyPair).then(transferWallet => {
 				let cashlink = new Cashlink($, transferWallet);
@@ -147,7 +147,7 @@ class Cashlink {
 	getUrl() {
 		return Cashlink.BASE_URL + '/#' 
 			+ (this._value? 'value='+this._value+'&' : '')
-			+ 'key=' + Nimiq.BufferUtils.toBase64(this._transferWallet.keyPair.privateKey.serialize());
+			+ 'key=' + Nimiq.BufferUtils.toBase64Url(this._transferWallet.keyPair.privateKey.serialize());
 	}
 
 
