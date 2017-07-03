@@ -99,6 +99,18 @@ class Cashlink {
 	}
 
 
+	off(type, callback) {
+		if (!(type in this._eventListeners)) {
+			return;
+		}
+		let index = this._eventListeners[type].indexOf(callback);
+		if (index === -1) {
+			return;
+		}
+		this._eventListeners[type].splice(index, 1);
+	}
+
+
 	fire(type, arg) {
 		if (!(type in this._eventListeners)) {
 			return;
