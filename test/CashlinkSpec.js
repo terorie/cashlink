@@ -63,7 +63,7 @@ describe("Cashlink", function() {
 			let cashlink = new Cashlink($, transferWallet);
 			expect(cashlink.constructor).toBe(Cashlink);
 			expect(cashlink.$).toBe($);
-			expect(cashlink._transferWallet).toBe(transferWallet);
+			expect(cashlink._wallet).toBe(transferWallet);
 		});
 
 		it('can be done with a given amount', function(done) {
@@ -75,7 +75,7 @@ describe("Cashlink", function() {
 					await cashlink.fund(amount, 1);
 					expect(cashlink.constructor).toBe(Cashlink);
 					expect(cashlink.$).toBe($);
-					expect(cashlink._transferWallet).toBeDefined();
+					expect(cashlink._wallet).toBeDefined();
 					expect(await cashlink.getAmount(true)).toBe(amount-1);
 				}
 			}
@@ -149,9 +149,9 @@ describe("Cashlink", function() {
 				let cashlink = await Cashlink.decodeCashlink($, url);
 				expect(cashlink.constructor).toBe(Cashlink);
 				expect(cashlink.$).toBe($);
-				expect(cashlink._transferWallet).toBeDefined();
-				expect(cashlink._transferWallet.keyPair.equals(transferWallet.keyPair)).toBeTruthy();
-				expect((await $.accounts.getBalance(cashlink._transferWallet.address)).value).toBe(50);
+				expect(cashlink._wallet).toBeDefined();
+				expect(cashlink._wallet.keyPair.equals(transferWallet.keyPair)).toBeTruthy();
+				expect((await $.accounts.getBalance(cashlink._wallet.address)).value).toBe(50);
 			}
 			test().then(done, done.fail);
 		});

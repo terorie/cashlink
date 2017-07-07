@@ -1,74 +1,115 @@
-class Cashlink {
-	/** Typically you'll not use the constructor directly, but the static createCashlink methods */
-	constructor($, transferWallet) {
+class CashLink {
+	constructor($, wallet, value = undefined, message = undefined) {
 		this.$ = $;
-		this._transferWallet = transferWallet;
-		this._value = 0;
+
+		this._wallet = wallet;
+		this._value = value;
+		this._message = message;
+
+		this._immutable = !!(value || message);
 		this._eventListeners = {};
+
 		this.$.mempool.on('transaction-added', this._onTransactionAdded.bind(this));
-		this.$.accounts.on(transferWallet.address, this._onBalanceChanged.bind(this));
+		this.$.accounts.on(wallet.address, this._onBalanceChanged.bind(this));
 	}
 
-	static createCashlink($) {
-		return Nimiq.Wallet.createVolatile().then(transferWallet => {
-			return new Cashlink($, transferWallet);
-		});
+	static create($) {
+		return Nimiq.Wallet.createVolatile()
+            .then(wallet => new CashLink($, wallet));
 	}
 
-	fund(amount, fee = 0) {
-		if (!Nimiq.NumberUtils.isUint64(amount) || amount===0) {
-			// all amounts and fees are always integers to ensure floating point precision.
-			throw Error("Only positive integer amounts allowed.");
-		}
-		if (!Nimiq.NumberUtils.isUint64(fee) || fee>=amount) {
-			throw Error("Illegal fee.");
-		}
+    static async parse($, str) {
+        try {
+            const buf = Nimiq.BufferUtils.fromBase64Url(str);
+            const key = Nimiq.PrivateKey.unserialize(buf);
+            const value = buf.readUint64();
+            const message = buf.readVarLengthString();
 
-		return this.$.accounts.getBalance(this.$.wallet.address).then(balance => {
-			if (balance.value < amount) {
-				throw Error("You can't send more money than you own");
-			}
-			// we do amount-fee because the recipient has to pay the fee
-			return this.$.wallet.createTransaction(this._transferWallet.address, amount-fee, fee, balance.nonce).then(transaction => {
-				return this.$.mempool.pushTransaction(transaction).then(() => {
-					this._value = amount - fee;
-				});
-			});
-		});
+            const keyPair = await Nimiq.KeyPair.derive(key);
+            const wallet = await new Nimiq.Wallet(keyPair);
+
+            return new CashLink($, wallet, value, message);
+        } catch (e) {
+            return undefined;
+        }
+    }
+
+    render() {
+	    const buf = new Nimiq.SerialBuffer(
+	        /*key*/ 96 +
+            /*value*/ 8 +
+            /*message length*/ 1 +
+            /*message*/ (this._message ? this._message.length : 0)
+        );
+
+	    this._wallet.keyPair.privateKey.serialize(buf);
+	    buf.writeUint64(this._value);
+	    buf.writeVarLengthString(this._message);
+
+        return Nimiq.BufferUtils.toBase64Url(buf);
+    }
+
+    get value() {
+        return this._value;
+    }
+
+    set value(value) {
+	    if (this._immutable) throw 'CashLink is immutable';
+	    if (!Nimiq.NumberUtils.isUint64(value) || value === 0) throw 'Malformed value';
+	    this._value = value;
+    }
+
+    get message() {
+	    return this._message;
+    }
+
+    set message(message) {
+	    if (this._immutable) throw 'CashLink is immutable';
+	    this._message = message;
+    }
+
+    async fund(fee = 0) {
+        if (!Nimiq.NumberUtils.isUint64(fee)) {
+            throw 'Malformed fee';
+        }
+
+		if (this._value === 0) {
+            throw 'Cannot fund CashLink with zero value';
+        }
+
+		const balance = await this.$.accounts.getBalance(this.$.wallet.address);
+        if (balance.value < this._value) {
+            throw 'Insufficient funds';
+        }
+
+        // The recipient pays the fee, thus send value - fee.
+        const transaction = await this.$.wallet.createTransaction(this._wallet.address, this._value - fee, fee, balance.nonce);
+        if (!await this.$.mempool.pushTransaction(transaction)) {
+            throw 'Failed to push transaction into mempool';
+        }
+
+        this._value = this._value - fee;
 	}
 
-
-	static decodeCashlink($, url) {
-		var vars = Cashlink.parseCashlinkUrl(url);
-		let privateKey = Nimiq.PrivateKey.unserialize(Nimiq.BufferUtils.fromBase64Url(vars.key));
-		return Nimiq.KeyPair.derive(privateKey).then(keyPair => {
-			return new Nimiq.Wallet(keyPair).then(transferWallet => {
-				let cashlink = new Cashlink($, transferWallet);
-				cashlink._value = vars.value;
-				return cashlink;
-			});
-		});
-	}
-
-
-	accept(fee = 0) {
+	async claim(fee = 0) {
 		// get out the money. Only the confirmed amount, because we can't request unconfirmed money.
-		return this.$.accounts.getBalance(this._transferWallet.address).then(balance => {
-			if (balance.value === 0) {
-				throw Error('There is no confirmed balance in this link');
-			}
-			return this._transferWallet.createTransaction(this.$.wallet.address, balance.value-fee, fee, balance.nonce).then(transaction => {
-				return this.$.mempool.pushTransaction(transaction);
-			});
-		});
+		const balance = await this.$.accounts.getBalance(this._wallet.address);
+        if (balance.value === 0) {
+            throw 'There is no confirmed balance in this link';
+        }
+
+		const transaction = await this._wallet.createTransaction(this.$.wallet.address, balance.value - fee, fee, balance.nonce);
+        if (!await this.$.mempool.pushTransaction(transaction)) {
+            throw 'Failed to push transaction into mempool';
+        }
 	}
 
 
 	getAmount(includeUnconfirmed) {
-		return this.$.accounts.getBalance(this._transferWallet.address).then(res => {
+		return this.$.accounts.getBalance(this._wallet.address).then(res => {
 			let balance = res.value;
 			if (includeUnconfirmed) {
-				let transferWalletAddress = this._transferWallet.address;
+				let transferWalletAddress = this._wallet.address;
 				return this.$.mempool._evictTransactions().then(() => {
 					// ensure that already validated transactions are ignored
 					let transactions = Object.values(this.$.mempool._transactions);
@@ -79,7 +120,7 @@ class Cashlink {
 						if (recipientAddr.equals(transferWalletAddress)) {
 							// money sent to the transfer wallet
 							balance += transaction.value;
-						} else if (senderPubKey.equals(this._transferWallet.publicKey)) {
+						} else if (senderPubKey.equals(this._wallet.publicKey)) {
 							balance -= transaction.value + transaction.fee;
 						}
 					}
@@ -122,8 +163,8 @@ class Cashlink {
 
 
 	_onTransactionAdded(transaction) {
-		if (transaction.recipientAddr.equals(this._transferWallet.address)
-			|| (transaction.senderPubKey).equals(this._transferWallet.publicKey)) {
+		if (transaction.recipientAddr.equals(this._wallet.address)
+			|| (transaction.senderPubKey).equals(this._wallet.publicKey)) {
 			return this.getAmount(true).then(val => {
 				this.fire('unconfirmed-amount-changed', val);
 			});
@@ -143,39 +184,11 @@ class Cashlink {
 		headChanged.then(() => this.fire('confirmed-amount-changed', account.balance.value));
 	}
 
-
-	getUrl() {
-		return Cashlink.BASE_URL + '/#' 
-			+ (this._value? 'value='+this._value+'&' : '')
-			+ 'key=' + Nimiq.BufferUtils.toBase64Url(this._transferWallet.keyPair.privateKey.serialize());
-	}
-
-
-	static parseCashlinkUrl(url) {
-		let urlParts = url.split('#');
-		if (urlParts[0].indexOf(Cashlink.BASE_URL)===-1) {
-			throw Error("Not a valid cashlink.");
-		}
-		let assignments = urlParts[1].split('&');
-		let vars = {};
-		for (let assignment of assignments) {
-			let [key, value] = assignment.split('=', 2);
-			vars[key] = value;
-		}
-		if (!vars.key) {
-			// private key is requiered
-			throw Error("Not a valid cashlink.");
-		}
-		return vars;
-	}
-
-
 	wasEmptied() {
-		return this.$.accounts.getBalance(this._transferWallet.address).then(res => {
+		return this.$.accounts.getBalance(this._wallet.address).then(res => {
 			// considered emptied if value is 0 and account has been used
 			// alternative would be res.value < this._value
 			return res.nonce > 0 && res.value === 0;
 		});
 	}
 }
-Cashlink.BASE_URL = 'nimiq.com/cashlinks';
