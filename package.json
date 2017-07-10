@@ -1,0 +1,30 @@
+{
+  "name": "cashlink-lib",
+  "version": "1.0.0",
+  "description": "Library for CashLink creation and handling",
+  "main": "cashlink.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "babel cashlink.js --out-file dist/cashlink.js --presets=es2017"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nimiq-network/cashlink-lib.git"
+  },
+  "keywords": [
+    "nimiq",
+    "cashlink"
+  ],
+  "author": "Nimiq Team",
+  "bugs": {
+    "url": "https://github.com/nimiq-network/cashlink-lib/issues"
+  },
+  "homepage": "https://nimiq.com",
+  "devDependencies": {
+    "babel-cli": "^6.24.1",
+    "babel-preset-es2017": "^6.24.1"
+  }
+}
