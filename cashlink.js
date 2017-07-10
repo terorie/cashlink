@@ -172,16 +172,26 @@ class CashLink {
 	}
 
 
-	_onBalanceChanged(account) {
-		// TODO. Temporary Workaround for Core Bug #189 - The accounts tree is not yet updated
-		// when the event is fired. We can however use the fact that the head-changed event is
-		// fired after all updates have finished.
-		// We use a promise here to avoid that we fire our event again when the head changes
-		// again. (Note that there is no way to remove an even listener in Nimiq.Observable)
-		let headChanged = new Promise((resolve, reject) => {
-			this.$.blockchain.on('head-changed', resolve);
-		});
-		headChanged.then(() => this.fire('confirmed-amount-changed', account.balance.value));
+	async _onBalanceChanged(account) {
+		let newBalance = account.balance;
+		let currentBalance = await this.$.accounts.getBalance(this._wallet.address);
+		if (currentBalance.value === newBalance.value) {
+			// balance is already updated
+			this.fire('confirmed-amount-changed', currentBalance.value);
+		} else {
+			// TODO. Temporary Workaround for Core Bug #189 - The accounts tree is not yet updated
+			// when the event is fired. We can however use the fact that the head-changed event is
+			// fired after all updates have finished.
+			// We use a promise here to avoid that we fire our event again when the head changes
+			// again. (Note that there is no way to remove an even listener in Nimiq.Observable)
+			let headChanged = new Promise((resolve, reject) => {
+				this.$.blockchain.on('head-changed', resolve);
+			});
+			headChanged.then(async function() {
+				currentBalance = await this.$.accounts.getBalance(this._wallet.address);
+				this.fire('confirmed-amount-changed', currentBalance.value);
+			}.bind(this));
+		}
 	}
 
 	wasEmptied() {
