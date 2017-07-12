@@ -62,12 +62,12 @@ class CashLink {
 	}
 
 	get message() {
-		return this._message;
+		return decodeURIComponent(this._message);
 	}
 
 	set message(message) {
 		if (this._immutable) throw 'CashLink is immutable';
-		this._message = message;
+		this._message = encodeURIComponent(message);
 	}
 
 	fund(fee = 0) {
