@@ -62,7 +62,7 @@ class CashLink {
     }
 
     get message() {
-        return decodeURIComponent(this._message);
+        return decodeURIComponent(this._message || '');
     }
 
     set message(message) {
