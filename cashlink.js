@@ -3,8 +3,8 @@ class CashLink {
         this.$ = $;
 
         this._wallet = wallet;
-        this._value = value;
-        this._message = message;
+        if (value) this.value = value;
+        if (message) this.message = message;
 
         this._immutable = !!(value || message);
         this._eventListeners = {};
@@ -23,7 +23,7 @@ class CashLink {
             const buf = Nimiq.BufferUtils.fromBase64Url(str);
             const key = Nimiq.PrivateKey.unserialize(buf);
             const value = buf.readUint64();
-            const message = buf.readVarLengthString();
+            const message = decodeURIComponent(buf.readVarLengthString());
 
             const keyPair = await Nimiq.KeyPair.derive(key);
             const wallet = await new Nimiq.Wallet(keyPair);
