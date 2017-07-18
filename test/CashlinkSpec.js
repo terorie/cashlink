@@ -79,8 +79,9 @@ describe("CashLink", function() {
         it('can detect if you want to spend more then you have', function(done) {
             async function test() {
                 await fillWallet($.wallet, 5);
-                let cashlink = await CashLink.createCashLink($);
-                await cashlink.fund(7, 1);
+                let cashlink = await CashLink.create($);
+                cashlink.value = 7;
+                await cashlink.fund(1);
             }
             test().then(done.fail, done);
             expectNothing();
@@ -159,7 +160,8 @@ describe("CashLink", function() {
                 let invalidFees = [-8, 8.8, 50, 51];
                 for (let fee of invalidFees) {
                     try {
-                        let cashlink = await CashLink.createCashLink($, 50);
+                        let cashlink = await CashLink.create($);
+                        cashlink.value = 50;
                         await cashlink.fund(fee);
                         done.fail(fee + ' is an illegal fee and should throw an exception');
                         return;
