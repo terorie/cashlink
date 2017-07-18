@@ -8,7 +8,7 @@ function expectNothing() {
     expect(true).toBeTruthy();
 }
 
-describe("Cashlink", function() {
+describe("CashLink", function() {
     let testAmounts = [];
     for (var i=2; i<10; ++i) {
         testAmounts.push(i);
@@ -60,20 +60,71 @@ describe("Cashlink", function() {
 
     describe('creation', function() {
         it('can be done by constructor', function() {
-            let cashlink = new Cashlink($, transferWallet);
-            expect(cashlink.constructor).toBe(Cashlink);
+            let cashlink = new CashLink($, transferWallet);
+            expect(cashlink.constructor).toBe(CashLink);
             expect(cashlink.$).toBe($);
             expect(cashlink._wallet).toBe(transferWallet);
         });
 
-        it('can be done with a given amount', function(done) {
+        it('can be done by the create method', function(done) {
+            async function test() {
+                let cashlink = await CashLink.create($);
+                expect(cashlink.constructor).toBe(CashLink);
+                expect(cashlink.$).toBe($);
+                expect(cashlink._wallet).toBeDefined();
+            }
+            test().then(done, done.fail);
+        });
+
+        it('can detect if you want to spend more then you have', function(done) {
+            async function test() {
+                await fillWallet($.wallet, 5);
+                let cashlink = await CashLink.createCashLink($);
+                await cashlink.fund(7, 1);
+            }
+            test().then(done.fail, done);
+            expectNothing();
+        });
+
+        it('can be done from an URL', function(done) {
+            async function test() {
+                await fillWallet(transferWallet, 50);
+                const value = 5;
+                const message = "Test";
+                const buf = new Nimiq.SerialBuffer(
+                    /*key*/ 96 +
+                    /*value*/ 8 +
+                    /*message length*/ 1 +
+                    /*message*/ message.length
+                );
+                transferWallet.keyPair.privateKey.serialize(buf);
+                buf.writeUint64(value);
+                buf.writeVarLengthString(message);
+                const payload =  Nimiq.BufferUtils.toBase64Url(buf);
+                let recipientWallet = await Nimiq.Wallet.createVolatile();
+                const cashlink = await CashLink.parse($, payload);
+                expect(cashlink).toBeDefined();
+                expect(cashlink.constructor).toBe(CashLink);
+                expect(cashlink.$).toBe($);
+                expect(cashlink._wallet).toBeDefined();
+                expect(cashlink._wallet.keyPair.equals(transferWallet.keyPair)).toBeTruthy();
+                expect((await $.accounts.getBalance(cashlink._wallet.address)).value).toBe(50);
+            }
+            test().then(done, done.fail);
+        });
+    });
+
+
+    describe('amount funding', function() {
+        it('can be done with a valid amount', function(done) {
             async function test() {
                 for (let amount of testAmounts) {
                     $.wallet = await Nimiq.Wallet.createVolatile();
                     await fillWallet($.wallet, amount);
-                    let cashlink = await Cashlink.createCashlink($);
-                    await cashlink.fund(amount, 1);
-                    expect(cashlink.constructor).toBe(Cashlink);
+                    let cashlink = await CashLink.create($);
+                    cashlink.value = amount;
+                    await cashlink.fund(1);
+                    expect(cashlink.constructor).toBe(CashLink);
                     expect(cashlink.$).toBe($);
                     expect(cashlink._wallet).toBeDefined();
                     expect(await cashlink.getAmount(true)).toBe(amount-1);
@@ -88,17 +139,13 @@ describe("Cashlink", function() {
                 let invalidAmounts = [0, -8, 8.8];
                 for (let amount of invalidAmounts) {
                     try {
-                        let cashlink = await Cashlink.createCashlink($);
-                        await cashlink.fund(amount, 1);
+                        let cashlink = await CashLink.create($);
+                        cashlink.value = amount;
+                        await cashlink.fund(1);
                         done.fail(amount + ' is an illegal amount and should throw an exception');
                         return;
                     } catch(e) {
-                        if (e.message === 'Only positive integer amounts allowed.') {
-                            continue;
-                        } else {
-                            done.fail('Unexpected exception.');
-                            return;
-                        }
+                        continue;
                     }
                 }
             }
@@ -112,60 +159,10 @@ describe("Cashlink", function() {
                 let invalidFees = [-8, 8.8, 50, 51];
                 for (let fee of invalidFees) {
                     try {
-                        let cashlink = await Cashlink.createCashlink($);
-                        await cashlink.fund(7, fee);
+                        let cashlink = await CashLink.createCashLink($, 50);
+                        await cashlink.fund(fee);
                         done.fail(fee + ' is an illegal fee and should throw an exception');
                         return;
-                    } catch(e) {
-                        if (e.message === 'Illegal fee.') {
-                            continue;
-                        } else {
-                            done.fail('Unexpected exception.');
-                            return;
-                        }
-                    }
-                }
-            }
-            test().then(done, done.fail);
-            expectNothing();
-        });
-
-        it('can detect if you want to spend more then you have', function(done) {
-            async function test() {
-                await fillWallet($.wallet, 5);
-                let cashlink = await Cashlink.createCashlink($);
-                await cashlink.fund(7, 1);
-            }
-            test().then(done.fail, done);
-            expectNothing();
-        });
-
-        it('can be done from an URL', function(done) {
-            async function test() {
-                await fillWallet(transferWallet, 50);
-                let privateKeyBase64 = Nimiq.BufferUtils.toBase64(transferWallet.keyPair.privateKey.serialize());
-                let url = Cashlink.BASE_URL +'#key=' + privateKeyBase64;
-                let recipientWallet = await Nimiq.Wallet.createVolatile();
-                let cashlink = await Cashlink.decodeCashlink($, url);
-                expect(cashlink.constructor).toBe(Cashlink);
-                expect(cashlink.$).toBe($);
-                expect(cashlink._wallet).toBeDefined();
-                expect(cashlink._wallet.keyPair.equals(transferWallet.keyPair)).toBeTruthy();
-                expect((await $.accounts.getBalance(cashlink._wallet.address)).value).toBe(50);
-            }
-            test().then(done, done.fail);
-        });
-
-        it('can detect invalid URLs', function(done) {
-            async function test() {
-                let invalidUrls = [Cashlink.BASE_URL+'#not$base&64.',
-                    Cashlink.BASE_URL+'#',
-                    'www.google.com'];
-                let recipientWallet = await Nimiq.Wallet.createVolatile();
-                for (let i=0, url; url=invalidUrls[i]; ++i) {
-                    try {
-                        await Cashlink.decodeCashlink($, url);
-                        done.fail("Shouldn't accept invalid URL: " + url);
                     } catch(e) {
                         continue;
                     }
@@ -173,7 +170,7 @@ describe("Cashlink", function() {
             }
             test().then(done, done.fail);
             expectNothing();
-        });
+        });        
     });
 
         
@@ -182,17 +179,17 @@ describe("Cashlink", function() {
             async function test() {
                 for (let amount of testAmounts) {
                     transferWallet = await Nimiq.Wallet.createVolatile();
-                    let cashlink = new Cashlink($, transferWallet);
+                    let cashlink = new CashLink($, transferWallet);
                     // put some already confirmed money on the transferWallet
                     await fillWallet(transferWallet, amount);
                     expect((await $.accounts.getBalance(transferWallet.address)).value).toBe(amount);
                     expect(await cashlink.getAmount()).toBe(amount);
-                    await cashlink.accept(1);
+                    await cashlink.claim(1);
                     // the money will be sent to the recipientWallet. Check its yet unconfirmed saldo
                     let transactions = Object.values($.mempool._transactions);
                     var transaction = transactions[transactions.length-1]; // this works well in chrome but
                     // there is no guarantee that this works (that we get the newest transaction). If the test
-                    // fails for you, you might to change this part
+                    // fails for you, you might want to change this part
                     expect((await transaction.getSenderAddr()).equals(transferWallet.address)).toBeTruthy();
                     expect(transaction.recipientAddr.equals($.wallet.address)).toBeTruthy();
                     expect(transaction.value).toBe(amount - 1);
@@ -217,7 +214,7 @@ describe("Cashlink", function() {
         it('are fired for an unconfirmed transaction', function(done) {
             async function test() {
                 await fillWallet($.wallet, 50);
-                let cashlink = new Cashlink($, transferWallet);
+                let cashlink = new CashLink($, transferWallet);
                 let eventPromise = createEventPromise(cashlink, 'unconfirmed-amount-changed');
                 let balance = await $.accounts.getBalance($.wallet.address);
                 let transaction =
@@ -230,7 +227,7 @@ describe("Cashlink", function() {
 
         it('are fired for a confirmed transaction', function(done) {
             async function test() {
-                let cashlink = new Cashlink($, transferWallet);
+                let cashlink = new CashLink($, transferWallet);
                 let eventPromise = createEventPromise(cashlink, 'confirmed-amount-changed');
                 // put some already confirmed money on the transferWallet
                 await fillWallet(transferWallet, 50);
