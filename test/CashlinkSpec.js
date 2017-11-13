@@ -1,5 +1,7 @@
 'use strict';
 
+console.warn('Note that currently, the cashlink tests do not include any tests for nano clients.');
+
 jasmine.DEFAULT_TIMEOUT_INTERVAL = 30000;
 
 // this method can be used in asynchronous tests that verify their result by done() / done.fail().
@@ -45,10 +47,15 @@ describe("CashLink", function() {
 
     beforeEach(function(done) {
         async function init() {
+            Services.configureServices(Services.LIGHT);
+            Services.configureServiceMask(Services.LIGHT | Services.FULL);
+
             $ = {};
-            $.accounts = await Nimiq.Accounts.createVolatile();
-            $.blockchain = await Nimiq.Blockchain.createVolatile($.accounts);
-            $.mempool = new Nimiq.Mempool($.blockchain, $.accounts);
+            $.accounts = await Accounts.createVolatile();
+            $.blockchain = await LightChain.createVolatile($.accounts);
+            $.mempool = new Mempool($.blockchain, $.accounts);
+            $.network = await new Network($.blockchain);
+            $.consensus = new LightConsensus($.blockchain, $.mempool, $.network);
             $.wallet = await Nimiq.Wallet.createVolatile();
             transferWallet = await Nimiq.Wallet.createVolatile();
         }
@@ -181,17 +188,21 @@ describe("CashLink", function() {
             async function test() {
                 for (let amount of testAmounts) {
                     transferWallet = await Nimiq.Wallet.createVolatile();
-                    let cashlink = new CashLink($, transferWallet);
+                    const cashlink = new CashLink($, transferWallet);
                     // put some already confirmed money on the transferWallet
                     await fillWallet(transferWallet, amount);
                     expect((await $.accounts.getBalance(transferWallet.address)).value).toBe(amount);
                     expect(await cashlink.getAmount()).toBe(amount);
                     await cashlink.claim(1);
                     // the money will be sent to the recipientWallet. Check its yet unconfirmed saldo
-                    let transactions = Object.values($.mempool._transactions);
-                    var transaction = transactions[transactions.length-1]; // this works well in chrome but
-                    // there is no guarantee that this works (that we get the newest transaction). If the test
-                    // fails for you, you might want to change this part
+                    const transactions = $.mempool._transactions.values();
+                    let transaction;
+                    for (const tx of transactions)  {
+                        // this works well in chrome but
+                        // there is no guarantee that this works (that we get the newest transaction). If the test
+                        // fails for you, you might want to change this part
+                        transaction = tx;
+                    }
                     expect((await transaction.getSenderAddr()).equals(transferWallet.address)).toBeTruthy();
                     expect(transaction.recipientAddr.equals($.wallet.address)).toBeTruthy();
                     expect(transaction.value).toBe(amount - 1);
@@ -233,7 +244,9 @@ describe("CashLink", function() {
                 let eventPromise = createEventPromise(cashlink, 'confirmed-amount-changed');
                 // put some already confirmed money on the transferWallet
                 await fillWallet(transferWallet, 50);
-                $.blockchain.fire('head-changed'); // simulate a mined block that contains our transaction
+                // simulate a mined block that contains our transaction
+                $.consensus._established = true;
+                $.blockchain.fire('head-changed');
                 expect(await eventPromise).toBe(50);
             }
             test().then(done, done.fail);

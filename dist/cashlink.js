@@ -3,8 +3,12 @@ function _asyncToGenerator(fn) { return function () { var gen = fn.apply(this, a
 class CashLink {
     constructor($, wallet, value = undefined, message = undefined) {
         this.$ = $;
+        this._isNano = $.consensus instanceof NanoConsensus;
 
         this._wallet = wallet;
+        this._currentBalance = 0;
+        this.getAmount().then(balance => this._currentBalance = balance);
+
         if (value) this.value = value;
         if (message) this.message = message;
 
@@ -12,11 +16,16 @@ class CashLink {
         this._eventListeners = {};
 
         this.$.mempool.on('transaction-added', this._onTransactionAdded.bind(this));
-        this.$.accounts.on(wallet.address, this._onBalanceChanged.bind(this));
+        this._onPotentialBalanceChange = this._onPotentialBalanceChange.bind(this);
+        this.$.blockchain.on('head-changed', this._onPotentialBalanceChange);
+        this.$.consensus.on('established', this._onPotentialBalanceChange);
     }
 
     static create($) {
-        return Nimiq.Wallet.createVolatile().then(wallet => new CashLink($, wallet));
+        return _asyncToGenerator(function* () {
+            const wallet = yield Nimiq.Wallet.createVolatile();
+            return new CashLink($, wallet);
+        })();
     }
 
     static parse($, str) {
@@ -84,7 +93,7 @@ class CashLink {
                 throw 'Cannot fund CashLink with zero value';
             }
 
-            const balance = yield _this.$.accounts.getBalance(_this.$.wallet.address);
+            const balance = yield _this._getBalance(_this.$.wallet.address); // the senders balance
             if (balance.value < _this._value) {
                 throw 'Insufficient funds';
             }
@@ -104,7 +113,7 @@ class CashLink {
 
         return _asyncToGenerator(function* () {
             // get out the money. Only the confirmed amount, because we can't request unconfirmed money.
-            const balance = yield _this2.$.accounts.getBalance(_this2._wallet.address);
+            const balance = yield _this2._getBalance();
             if (balance.value === 0) {
                 throw 'There is no confirmed balance in this link';
             }
@@ -116,30 +125,45 @@ class CashLink {
         })();
     }
 
-    getAmount(includeUnconfirmed) {
-        return this.$.accounts.getBalance(this._wallet.address).then(res => {
-            let balance = res.value;
-            if (includeUnconfirmed) {
-                let transferWalletAddress = this._wallet.address;
-                return this.$.mempool._evictTransactions().then(() => {
-                    // ensure that already validated transactions are ignored
-                    let transactions = Object.values(this.$.mempool._transactions);
-                    for (let i = 0; i < transactions.length; ++i) {
-                        let transaction = transactions[i];
-                        let senderPubKey = transaction.senderPubKey;
-                        let recipientAddr = transaction.recipientAddr;
-                        if (recipientAddr.equals(transferWalletAddress)) {
-                            // money sent to the transfer wallet
-                            balance += transaction.value;
-                        } else if (senderPubKey.equals(this._wallet.publicKey)) {
-                            balance -= transaction.value + transaction.fee;
-                        }
-                    }
-                    return balance;
-                });
+    _getBalance(address = this._wallet.address) {
+        var _this3 = this;
+
+        return _asyncToGenerator(function* () {
+            let balance;
+            if (_this3._isNano) {
+                balance = (yield _this3.$.consensus.getAccount(address)).balance;
+            } else {
+                balance = yield _this3.$.accounts.getBalance(address);
+            }
+            if (address.equals(_this3._wallet.address)) {
+                _this3._currentBalance = balance.value;
             }
             return balance;
-        });
+        })();
+    }
+
+    getAmount(includeUnconfirmed) {
+        var _this4 = this;
+
+        return _asyncToGenerator(function* () {
+            let balance = (yield _this4._getBalance()).value;
+            if (includeUnconfirmed) {
+                const transferWalletAddress = _this4._wallet.address;
+                yield _this4.$.mempool._evictTransactions(); // ensure that already validated transactions are ignored
+                const transactions = _this4.$.mempool._transactions.values();
+                for (const transaction of transactions) {
+                    const senderPubKey = transaction.senderPubKey;
+                    const recipientAddr = transaction.recipientAddr;
+                    if (recipientAddr.equals(transferWalletAddress)) {
+                        // money sent to the transfer wallet
+                        balance += transaction.value;
+                    } else if (senderPubKey.equals(_this4._wallet.publicKey)) {
+                        balance -= transaction.value + transaction.fee;
+                    }
+                }
+            }
+            return balance;
+        })();
     }
 
     on(type, callback) {
@@ -170,44 +194,40 @@ class CashLink {
     }
 
     _onTransactionAdded(transaction) {
-        if (transaction.recipientAddr.equals(this._wallet.address) || transaction.senderPubKey.equals(this._wallet.publicKey)) {
-            return this.getAmount(true).then(val => {
-                this.fire('unconfirmed-amount-changed', val);
-            });
-        }
-    }
-
-    _onBalanceChanged(account) {
-        var _this3 = this;
+        var _this5 = this;
 
         return _asyncToGenerator(function* () {
-            let newBalance = account.balance;
-            let currentBalance = yield _this3.$.accounts.getBalance(_this3._wallet.address);
-            if (currentBalance.value === newBalance.value) {
-                // balance is already updated
-                _this3.fire('confirmed-amount-changed', currentBalance.value);
-            } else {
-                // TODO. Temporary Workaround for Core Bug #189 - The accounts tree is not yet updated
-                // when the event is fired. We can however use the fact that the head-changed event is
-                // fired after all updates have finished.
-                // We use a promise here to avoid that we fire our event again when the head changes
-                // again. (Note that there is no way to remove an even listener in Nimiq.Observable)
-                let headChanged = new Promise(function (resolve, reject) {
-                    _this3.$.blockchain.on('head-changed', resolve);
-                });
-                headChanged.then(_asyncToGenerator(function* () {
-                    currentBalance = yield this.$.accounts.getBalance(this._wallet.address);
-                    this.fire('confirmed-amount-changed', currentBalance.value);
-                }).bind(_this3));
+            if (transaction.recipientAddr.equals(_this5._wallet.address) || transaction.senderPubKey.equals(_this5._wallet.publicKey)) {
+                const amount = yield _this5.getAmount(true);
+                _this5.fire('unconfirmed-amount-changed', amount);
+            }
+        })();
+    }
+
+    _onPotentialBalanceChange() {
+        var _this6 = this;
+
+        return _asyncToGenerator(function* () {
+            if (!_this6.$.consensus.established) {
+                // only mind final balance
+                return;
+            }
+            const oldBalance = _this6._currentBalance;
+            const balance = yield _this6.getAmount();
+
+            if (balance !== oldBalance) {
+                _this6.fire('confirmed-amount-changed', balance);
             }
         })();
     }
 
     wasEmptied() {
-        return this.$.accounts.getBalance(this._wallet.address).then(res => {
+        var _this7 = this;
+
+        return _asyncToGenerator(function* () {
+            const balance = yield _this7._getBalance();
             // considered emptied if value is 0 and account has been used
-            // alternative would be res.value < this._value
-            return res.nonce > 0 && res.value === 0;
-        });
+            return balance.nonce > 0 && balance.value === 0;
+        })();
     }
 }
