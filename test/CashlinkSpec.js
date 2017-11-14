@@ -58,6 +58,7 @@ describe("CashLink", function() {
             $.consensus = new LightConsensus($.blockchain, $.mempool, $.network);
             $.wallet = await Nimiq.Wallet.createVolatile();
             transferWallet = await Nimiq.Wallet.createVolatile();
+            $.consensus._established = true;
         }
         init().then(done, done.fail);
     });

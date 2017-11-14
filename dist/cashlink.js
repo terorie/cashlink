@@ -3,11 +3,16 @@ function _asyncToGenerator(fn) { return function () { var gen = fn.apply(this, a
 class CashLink {
     constructor($, wallet, value = undefined, message = undefined) {
         this.$ = $;
-        this._isNano = $.consensus instanceof NanoConsensus;
+        this._isNano = $.consensus instanceof Nimiq.NanoConsensus;
 
         this._wallet = wallet;
-        this._currentBalance = 0;
-        this.getAmount().then(balance => this._currentBalance = balance);
+        if ($.consensus.established) {
+            this.getAmount().then(balance => this._currentBalance = balance);
+        } else {
+            // value will we updated as soon as we have consensus (in _onPotentialBalanceChange)
+            // and a confirmed-amount-changed event gets fired
+            this._currentBalance = 0;
+        }
 
         if (value) this.value = value;
         if (message) this.message = message;
@@ -81,83 +86,113 @@ class CashLink {
         this._message = message;
     }
 
-    fund(fee = 0) {
+    _executeOnConsensus(fn, args = []) {
         var _this = this;
+
+        return _asyncToGenerator(function* () {
+            if (_this.$.consensus.established) {
+                return fn.apply(_this, args);
+            } else {
+                yield new Promise(function (resolve, reject) {
+                    _this.$.consensus.on('established', resolve);
+                    setTimeout(function () {
+                        return reject('Current network consensus unknown.');
+                    }, 60000);
+                });
+                return fn.apply(_this, args);
+            }
+        })();
+    }
+
+    _sendTransaction(transaction) {
+        var _this2 = this;
+
+        return _asyncToGenerator(function* () {
+            yield _this2._executeOnConsensus(_asyncToGenerator(function* () {
+                if (_this2._isNano) {
+                    yield _this2.$.consensus.relayTransaction(transaction);
+                } else {
+                    if (!(yield _this2.$.mempool.pushTransaction(transaction))) {
+                        throw 'Failed to push transaction into mempool';
+                    }
+                }
+            }));
+        })();
+    }
+
+    fund(fee = 0) {
+        var _this3 = this;
 
         return _asyncToGenerator(function* () {
             if (!Nimiq.NumberUtils.isUint64(fee)) {
                 throw 'Malformed fee';
             }
 
-            if (_this._value === 0) {
+            if (_this3._value === 0) {
                 throw 'Cannot fund CashLink with zero value';
             }
 
-            const balance = yield _this._getBalance(_this.$.wallet.address); // the senders balance
-            if (balance.value < _this._value) {
+            const balance = yield _this3._getBalance(_this3.$.wallet.address); // the senders balance
+            if (balance.value < _this3._value) {
                 throw 'Insufficient funds';
             }
 
             // The recipient pays the fee, thus send value - fee.
-            const transaction = yield _this.$.wallet.createTransaction(_this._wallet.address, _this._value - fee, fee, balance.nonce);
-            if (!(yield _this.$.mempool.pushTransaction(transaction))) {
-                throw 'Failed to push transaction into mempool';
-            }
+            const transaction = yield _this3.$.wallet.createTransaction(_this3._wallet.address, _this3._value - fee, fee, balance.nonce);
+            yield _this3._sendTransaction(transaction);
 
-            _this._value = _this._value - fee;
+            _this3._value = _this3._value - fee;
         })();
     }
 
     claim(fee = 0) {
-        var _this2 = this;
+        var _this4 = this;
 
         return _asyncToGenerator(function* () {
             // get out the money. Only the confirmed amount, because we can't request unconfirmed money.
-            const balance = yield _this2._getBalance();
+            const balance = yield _this4._getBalance();
             if (balance.value === 0) {
                 throw 'There is no confirmed balance in this link';
             }
 
-            const transaction = yield _this2._wallet.createTransaction(_this2.$.wallet.address, balance.value - fee, fee, balance.nonce);
-            if (!(yield _this2.$.mempool.pushTransaction(transaction))) {
-                throw 'Failed to push transaction into mempool';
-            }
+            const transaction = yield _this4._wallet.createTransaction(_this4.$.wallet.address, balance.value - fee, fee, balance.nonce);
+            yield _this4._sendTransaction(transaction);
         })();
     }
 
     _getBalance(address = this._wallet.address) {
-        var _this3 = this;
+        var _this5 = this;
 
         return _asyncToGenerator(function* () {
-            let balance;
-            if (_this3._isNano) {
-                balance = (yield _this3.$.consensus.getAccount(address)).balance;
-            } else {
-                balance = yield _this3.$.accounts.getBalance(address);
-            }
-            if (address.equals(_this3._wallet.address)) {
-                _this3._currentBalance = balance.value;
+            const balance = yield _this5._executeOnConsensus(_asyncToGenerator(function* () {
+                if (_this5._isNano) {
+                    return (yield _this5.$.consensus.getAccount(address)).balance;
+                } else {
+                    return _this5.$.accounts.getBalance(address);
+                }
+            }));
+            if (address.equals(_this5._wallet.address)) {
+                _this5._currentBalance = balance.value;
             }
             return balance;
         })();
     }
 
     getAmount(includeUnconfirmed) {
-        var _this4 = this;
+        var _this6 = this;
 
         return _asyncToGenerator(function* () {
-            let balance = (yield _this4._getBalance()).value;
+            let balance = (yield _this6._getBalance()).value;
             if (includeUnconfirmed) {
-                const transferWalletAddress = _this4._wallet.address;
-                yield _this4.$.mempool._evictTransactions(); // ensure that already validated transactions are ignored
-                const transactions = _this4.$.mempool._transactions.values();
+                const transferWalletAddress = _this6._wallet.address;
+                const transactions = _this6.$.mempool._transactions.values();
                 for (const transaction of transactions) {
                     const senderPubKey = transaction.senderPubKey;
                     const recipientAddr = transaction.recipientAddr;
                     if (recipientAddr.equals(transferWalletAddress)) {
                         // money sent to the transfer wallet
                         balance += transaction.value;
-                    } else if (senderPubKey.equals(_this4._wallet.publicKey)) {
+                    } else if (senderPubKey.equals(_this6._wallet.publicKey)) {
                         balance -= transaction.value + transaction.fee;
                     }
                 }
@@ -194,38 +229,40 @@ class CashLink {
     }
 
     _onTransactionAdded(transaction) {
-        var _this5 = this;
+        var _this7 = this;
 
         return _asyncToGenerator(function* () {
-            if (transaction.recipientAddr.equals(_this5._wallet.address) || transaction.senderPubKey.equals(_this5._wallet.publicKey)) {
-                const amount = yield _this5.getAmount(true);
-                _this5.fire('unconfirmed-amount-changed', amount);
+            if (transaction.recipientAddr.equals(_this7._wallet.address) || transaction.senderPubKey.equals(_this7._wallet.publicKey)) {
+                const amount = yield _this7.getAmount(true);
+                _this7.fire('unconfirmed-amount-changed', amount);
             }
         })();
     }
 
     _onPotentialBalanceChange() {
-        var _this6 = this;
+        var _this8 = this;
 
         return _asyncToGenerator(function* () {
-            if (!_this6.$.consensus.established) {
+            if (!_this8.$.consensus.established) {
                 // only mind final balance
                 return;
             }
-            const oldBalance = _this6._currentBalance;
-            const balance = yield _this6.getAmount();
+            const oldBalance = _this8._currentBalance;
+            const balance = yield _this8.getAmount();
 
             if (balance !== oldBalance) {
-                _this6.fire('confirmed-amount-changed', balance);
+                _this8.fire('confirmed-amount-changed', balance);
+                // for getAmount(true) ensure that already validated transactions get removed.
+                _this8.$.mempool._evictTransactions();
             }
         })();
     }
 
     wasEmptied() {
-        var _this7 = this;
+        var _this9 = this;
 
         return _asyncToGenerator(function* () {
-            const balance = yield _this7._getBalance();
+            const balance = yield _this9._getBalance();
             // considered emptied if value is 0 and account has been used
             return balance.nonce > 0 && balance.value === 0;
         })();

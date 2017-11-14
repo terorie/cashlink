@@ -1,11 +1,16 @@
 class CashLink {
     constructor($, wallet, value = undefined, message = undefined) {
         this.$ = $;
-        this._isNano = $.consensus instanceof NanoConsensus;
+        this._isNano = $.consensus instanceof Nimiq.NanoConsensus;
 
         this._wallet = wallet;
-        this._currentBalance = 0;
-        this.getAmount().then(balance => this._currentBalance = balance);
+        if ($.consensus.established) {
+            this.getAmount().then(balance => this._currentBalance = balance);
+        } else {
+            // value will we updated as soon as we have consensus (in _onPotentialBalanceChange)
+            // and a confirmed-amount-changed event gets fired
+            this._currentBalance = 0;
+        }
 
         if (value) this.value = value;
         if (message) this.message = message;
@@ -76,6 +81,32 @@ class CashLink {
         this._message = message;
     }
 
+    async _executeOnConsensus(fn, args = []) {
+        if (this.$.consensus.established) {
+            return fn.apply(this, args);
+        } else {
+            await new Promise((resolve, reject) => {
+                this.$.consensus.on('established', resolve);
+                setTimeout(() => reject('Current network consensus unknown.'), 60000);
+            });
+            return fn.apply(this, args);
+        }
+    }
+
+
+    async _sendTransaction(transaction) {
+        await this._executeOnConsensus(async () => {
+            if (this._isNano) {
+                await this.$.consensus.relayTransaction(transaction);
+            } else {
+                if (!await this.$.mempool.pushTransaction(transaction)) {
+                    throw 'Failed to push transaction into mempool';
+                }
+            }
+        });
+    }
+
+
     async fund(fee = 0) {
         if (!Nimiq.NumberUtils.isUint64(fee)) {
             throw 'Malformed fee';
@@ -92,9 +123,7 @@ class CashLink {
 
         // The recipient pays the fee, thus send value - fee.
         const transaction = await this.$.wallet.createTransaction(this._wallet.address, this._value - fee, fee, balance.nonce);
-        if (!await this.$.mempool.pushTransaction(transaction)) {
-            throw 'Failed to push transaction into mempool';
-        }
+        await this._sendTransaction(transaction);
 
         this._value = this._value - fee;
     }
@@ -107,19 +136,18 @@ class CashLink {
         }
 
         const transaction = await this._wallet.createTransaction(this.$.wallet.address, balance.value - fee, fee, balance.nonce);
-        if (!await this.$.mempool.pushTransaction(transaction)) {
-            throw 'Failed to push transaction into mempool';
-        }
+        await this._sendTransaction(transaction);
     }
 
 
     async _getBalance(address = this._wallet.address) {
-        let balance;
-        if (this._isNano) {
-            balance = (await this.$.consensus.getAccount(address)).balance;
-        } else {
-            balance = await this.$.accounts.getBalance(address);
-        }
+        const balance = await this._executeOnConsensus(async () => {
+            if (this._isNano) {
+                return (await this.$.consensus.getAccount(address)).balance;
+            } else {
+                return this.$.accounts.getBalance(address);
+            }
+        });
         if (address.equals(this._wallet.address)) {
             this._currentBalance = balance.value;
         }
@@ -131,7 +159,6 @@ class CashLink {
         let balance = (await this._getBalance()).value;
         if (includeUnconfirmed) {
             const transferWalletAddress = this._wallet.address;
-            await this.$.mempool._evictTransactions(); // ensure that already validated transactions are ignored
             const transactions = this.$.mempool._transactions.values();
             for (const transaction of transactions) {
                 const senderPubKey = transaction.senderPubKey;
@@ -197,6 +224,8 @@ class CashLink {
 
         if (balance !== oldBalance) {
             this.fire('confirmed-amount-changed', balance);
+            // for getAmount(true) ensure that already validated transactions get removed.
+            this.$.mempool._evictTransactions();
         }
     }
 
