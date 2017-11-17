@@ -4,6 +4,7 @@ class CashLink {
         this._isNano = $.consensus instanceof Nimiq.NanoConsensus;
 
         this._wallet = wallet;
+        this._balanceRequests = new Map(); // for request caching
         if ($.consensus.established) {
             this.getAmount().then(balance => this._currentBalance = balance);
         } else {
@@ -19,9 +20,8 @@ class CashLink {
         this._eventListeners = {};
 
         this.$.mempool.on('transaction-added', this._onTransactionAdded.bind(this));
-        this._onPotentialBalanceChange = this._onPotentialBalanceChange.bind(this);
-        this.$.blockchain.on('head-changed', this._onPotentialBalanceChange);
-        this.$.consensus.on('established', this._onPotentialBalanceChange);
+        this.$.blockchain.on('head-changed', this._onHeadChanged.bind(this));
+        this.$.consensus.on('established', this._onPotentialBalanceChange.bind(this));
     }
 
     static async create($) {
@@ -81,33 +81,49 @@ class CashLink {
         this._message = message;
     }
 
-    async _executeOnConsensus(fn, args = []) {
-        if (this.$.consensus.established) {
-            return fn.apply(this, args);
-        } else {
+
+    async _awaitConsensus() {
+        if (!this.$.consensus.established) {
             await new Promise((resolve, reject) => {
                 this.$.consensus.on('established', resolve);
                 setTimeout(() => reject('Current network consensus unknown.'), 60000);
             });
-            return fn.apply(this, args);
         }
     }
 
 
     async _sendTransaction(transaction) {
-        await this._executeOnConsensus(async () => {
-            if (this._isNano) {
+        await this._awaitConsensus();
+        if (this._isNano) {
+            try {
                 await this.$.consensus.relayTransaction(transaction);
-            } else {
-                if (!await this.$.mempool.pushTransaction(transaction)) {
-                    throw 'Failed to push transaction into mempool';
-                }
+            } catch(e) {
+                console.error(e);
+                throw 'Failed to forward transaction to the network';
             }
-        });
+        } else {
+            if (!await this.$.mempool.pushTransaction(transaction)) {
+                throw 'Failed to push transaction into mempool';
+            }
+        }
+    }
+
+    async _executeUntilSuccess(fn, args = []) {
+        try {
+            return await fn.apply(this, args);
+        } catch(e) {
+            console.error(e);
+            return new Promise(resolve => {
+                setTimeout(() => {
+                    this._executeUntilSuccess(fn, args).then(result => resolve(result));
+                }, 700);
+            });
+        }
     }
 
 
     async fund(fee = 0) {
+        // don't apply _executeUntilSuccess to avoid accidential double funding. Rather throw the exception.
         if (!Nimiq.NumberUtils.isUint64(fee)) {
             throw 'Malformed fee';
         }
@@ -128,30 +144,48 @@ class CashLink {
         this._value = this._value - fee;
     }
 
+
     async claim(fee = 0) {
         // get out the money. Only the confirmed amount, because we can't request unconfirmed money.
         const balance = await this._getBalance();
         if (balance.value === 0) {
             throw 'There is no confirmed balance in this link';
         }
-
         const transaction = await this._wallet.createTransaction(this.$.wallet.address, balance.value - fee, fee, balance.nonce);
-        await this._sendTransaction(transaction);
+        await this._executeUntilSuccess(async () => {
+            await this._sendTransaction(transaction);
+        });
     }
 
 
     async _getBalance(address = this._wallet.address) {
-        const balance = await this._executeOnConsensus(async () => {
-            if (this._isNano) {
-                return (await this.$.consensus.getAccount(address)).balance;
-            } else {
-                return this.$.accounts.getBalance(address);
-            }
-        });
-        if (address.equals(this._wallet.address)) {
-            this._currentBalance = balance.value;
+        let request = this._balanceRequests.get(address);
+        if (!request) {
+            const headHash = this.$.blockchain.headHash;
+            request = this._executeUntilSuccess(async () => {
+                await this._awaitConsensus();
+                let balance;
+                if (this._isNano) {
+                    balance = (await this.$.consensus.getAccount(address)).balance;
+                } else {
+                    balance = await this.$.accounts.getBalance(address);
+                }
+                if (!this.$.blockchain.headHash.equals(headHash) && this._balanceRequests.get(address)) {
+                    // the head changed and there was a new balance request for the new head, so we return
+                    // that newer request
+                    return this._balanceRequests.get(address);
+                } else {
+                    // the head didn't change (so everything alright) or we don't have a newer request and
+                    // just return the result we got for the older head
+                    if (address.equals(this._wallet.address)) {
+                        this._currentBalance = balance.value;
+                    }
+                    return balance;
+                }
+            });
+            this._balanceRequests.set(address, request);
         }
-        return balance
+        return request; // a promise
     }
 
 
@@ -214,9 +248,19 @@ class CashLink {
     }
 
 
+    async _onHeadChanged(head, branching) {
+        // balances potentially changed
+        this._balanceRequests.clear();
+        if (!branching) {
+            // only interested in final balance
+            await this._onPotentialBalanceChange();
+        }
+    }
+
+
     async _onPotentialBalanceChange() {
         if (!this.$.consensus.established) {
-            // only mind final balance
+            // only interested in final balance
             return;
         }
         const oldBalance = this._currentBalance;

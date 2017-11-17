@@ -43,6 +43,7 @@ describe("CashLink", function() {
         await $.accounts._updateBalance(transaction,
             wallet.address, amount, (a, b) => a + b);
         await transaction.commit();
+        $.blockchain.fire('head-changed'); // simulate a head change
     }
 
     beforeEach(function(done) {
@@ -184,8 +185,8 @@ describe("CashLink", function() {
     });
 
         
-    describe('amount recieving', function() {
-        it('can recieve the correct amount', function(done) {
+    describe('amount receiving', function() {
+        it('can receive the correct amount', function(done) {
             async function test() {
                 for (let amount of testAmounts) {
                     transferWallet = await Nimiq.Wallet.createVolatile();
