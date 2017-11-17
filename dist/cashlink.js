@@ -53,7 +53,7 @@ class CashLink {
 
     render() {
         const buf = new Nimiq.SerialBuffer(
-        /*key*/96 +
+        /*key*/32 +
         /*value*/8 +
         /*message length*/1 + (
         /*message*/this._message ? this._message.length : 0));
