@@ -39,10 +39,7 @@ describe("CashLink", function() {
     let $, transferWallet;
 
     async function fillWallet(wallet, amount) {
-        let transaction = await $.accounts._tree.transaction();
-        await $.accounts._updateBalance(transaction,
-            wallet.address, amount, (a, b) => a + b);
-        await transaction.commit();
+        await $.accounts._addBalance($.accounts._tree, wallet.address, amount);
         $.blockchain.fire('head-changed'); // simulate a head change
     }
 
@@ -118,7 +115,7 @@ describe("CashLink", function() {
                 expect(cashlink.$).toBe($);
                 expect(cashlink._wallet).toBeDefined();
                 expect(cashlink._wallet.keyPair.equals(transferWallet.keyPair)).toBeTruthy();
-                expect((await $.accounts.getBalance(cashlink._wallet.address)).value).toBe(50);
+                expect((await $.accounts.get(cashlink._wallet.address)).balance).toBe(50);
             }
             test().then(done, done.fail);
         });
@@ -193,20 +190,13 @@ describe("CashLink", function() {
                     const cashlink = new CashLink($, transferWallet);
                     // put some already confirmed money on the transferWallet
                     await fillWallet(transferWallet, amount);
-                    expect((await $.accounts.getBalance(transferWallet.address)).value).toBe(amount);
+                    expect((await $.accounts.get(transferWallet.address)).balance).toBe(amount);
                     expect(await cashlink.getAmount()).toBe(amount);
                     await cashlink.claim(1);
                     // the money will be sent to the recipientWallet. Check its yet unconfirmed saldo
-                    const transactions = $.mempool._transactions.values();
-                    let transaction;
-                    for (const tx of transactions)  {
-                        // this works well in chrome but
-                        // there is no guarantee that this works (that we get the newest transaction). If the test
-                        // fails for you, you might want to change this part
-                        transaction = tx;
-                    }
-                    expect((await transaction.getSenderAddr()).equals(transferWallet.address)).toBeTruthy();
-                    expect(transaction.recipientAddr.equals($.wallet.address)).toBeTruthy();
+                    const transaction = $.mempool.getWaitingTransactions(transferWallet.address)[0];
+                    expect(transaction.sender.equals(transferWallet.address)).toBeTruthy();
+                    expect(transaction.recipient.equals($.wallet.address)).toBeTruthy();
                     expect(transaction.value).toBe(amount - 1);
                     expect(transaction.fee).toBe(1);
                     expect(await cashlink.getAmount(true)).toBe(0);
@@ -231,9 +221,9 @@ describe("CashLink", function() {
                 await fillWallet($.wallet, 50);
                 let cashlink = new CashLink($, transferWallet);
                 let eventPromise = createEventPromise(cashlink, 'unconfirmed-amount-changed');
-                let balance = await $.accounts.getBalance($.wallet.address);
+                let account = await $.accounts.get($.wallet.address);
                 let transaction =
-                    await $.wallet.createTransaction(transferWallet.address, 11-1, 1, balance.nonce);
+                    await $.wallet.createTransaction(transferWallet.address, 11-1, 1, account.nonce);
                 $.mempool.pushTransaction(transaction);
                 expect(await eventPromise).toBe(10);
             }

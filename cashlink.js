@@ -4,7 +4,7 @@ class CashLink {
         this._isNano = $.consensus instanceof Nimiq.NanoConsensus;
 
         this._wallet = wallet;
-        this._balanceRequests = new Map(); // for request caching
+        this._accountRequests = new Map(); // for request caching
         if ($.consensus.established) {
             this.getAmount().then(balance => this._currentBalance = balance);
         } else {
@@ -132,13 +132,13 @@ class CashLink {
             throw 'Cannot fund CashLink with zero value';
         }
 
-        const balance = await this._getBalance(this.$.wallet.address); // the senders balance
-        if (balance.value < this._value) {
+        const account = await this._getAccount(this.$.wallet.address); // the senders account
+        if (account.balance < this._value) {
             throw 'Insufficient funds';
         }
 
         // The recipient pays the fee, thus send value - fee.
-        const transaction = await this.$.wallet.createTransaction(this._wallet.address, this._value - fee, fee, balance.nonce);
+        const transaction = await this.$.wallet.createTransaction(this._wallet.address, this._value - fee, fee, account.nonce);
         await this._sendTransaction(transaction);
 
         this._value = this._value - fee;
@@ -147,60 +147,60 @@ class CashLink {
 
     async claim(fee = 0) {
         // get out the money. Only the confirmed amount, because we can't request unconfirmed money.
-        const balance = await this._getBalance();
-        if (balance.value === 0) {
+        const account = await this._getAccount();
+        if (account.balance === 0) {
             throw 'There is no confirmed balance in this link';
         }
-        const transaction = await this._wallet.createTransaction(this.$.wallet.address, balance.value - fee, fee, balance.nonce);
+        const transaction = await this._wallet.createTransaction(this.$.wallet.address, account.balance - fee, fee, account.nonce);
         await this._executeUntilSuccess(async () => {
             await this._sendTransaction(transaction);
         });
     }
 
 
-    async _getBalance(address = this._wallet.address) {
-        let request = this._balanceRequests.get(address);
+    async _getAccount(address = this._wallet.address) {
+        let request = this._accountRequests.get(address);
         if (!request) {
             const headHash = this.$.blockchain.headHash;
             request = this._executeUntilSuccess(async () => {
                 await this._awaitConsensus();
-                let balance;
+                let account;
                 if (this._isNano) {
-                    balance = (await this.$.consensus.getAccount(address)).balance;
+                    account = await this.$.consensus.getAccount(address);
                 } else {
-                    balance = await this.$.accounts.getBalance(address);
+                    account = await this.$.accounts.get(address);
                 }
-                if (!this.$.blockchain.headHash.equals(headHash) && this._balanceRequests.get(address)) {
-                    // the head changed and there was a new balance request for the new head, so we return
+                account = account || Nimiq.BasicAccount.INITIAL;
+                if (!this.$.blockchain.headHash.equals(headHash) && this._accountRequests.get(address)) {
+                    // the head changed and there was a new account request for the new head, so we return
                     // that newer request
-                    return this._balanceRequests.get(address);
+                    return this._accountRequests.get(address);
                 } else {
                     // the head didn't change (so everything alright) or we don't have a newer request and
                     // just return the result we got for the older head
                     if (address.equals(this._wallet.address)) {
-                        this._currentBalance = balance.value;
+                        this._currentBalance = account.balance;
                     }
-                    return balance;
+                    return account;
                 }
             });
-            this._balanceRequests.set(address, request);
+            this._accountRequests.set(address, request);
         }
         return request; // a promise
     }
 
 
     async getAmount(includeUnconfirmed) {
-        let balance = (await this._getBalance()).value;
+        let balance = (await this._getAccount()).balance;
         if (includeUnconfirmed) {
             const transferWalletAddress = this._wallet.address;
-            const transactions = this.$.mempool._transactions.values();
-            for (const transaction of transactions) {
-                const senderPubKey = transaction.senderPubKey;
-                const recipientAddr = transaction.recipientAddr;
-                if (recipientAddr.equals(transferWalletAddress)) {
+            for (const transaction of this.$.mempool.getTransactions()) {
+                const sender = transaction.sender;
+                const recipient = transaction.recipient;
+                if (recipient.equals(transferWalletAddress)) {
                     // money sent to the transfer wallet
                     balance += transaction.value;
-                } else if (senderPubKey.equals(this._wallet.publicKey)) {
+                } else if (sender.equals(transferWalletAddress)) {
                     balance -= transaction.value + transaction.fee;
                 }
             }
@@ -240,8 +240,8 @@ class CashLink {
 
 
     async _onTransactionAdded(transaction) {
-        if (transaction.recipientAddr.equals(this._wallet.address)
-            || (transaction.senderPubKey).equals(this._wallet.publicKey)) {
+        if (transaction.recipient.equals(this._wallet.address)
+            || (transaction.sender).equals(this._wallet.address)) {
             const amount = await this.getAmount(true);
             this.fire('unconfirmed-amount-changed', amount);
         }
@@ -250,7 +250,7 @@ class CashLink {
 
     async _onHeadChanged(head, branching) {
         // balances potentially changed
-        this._balanceRequests.clear();
+        this._accountRequests.clear();
         if (!branching) {
             // only interested in final balance
             await this._onPotentialBalanceChange();
@@ -275,8 +275,8 @@ class CashLink {
 
 
     async wasEmptied() {
-        const balance = await this._getBalance();
+        const account = await this._getAccount();
         // considered emptied if value is 0 and account has been used
-        return balance.nonce > 0 && balance.value === 0;
+        return account.nonce > 0 && account.balance === 0;
     }
 }
