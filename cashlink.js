@@ -116,7 +116,7 @@ class CashLink {
             return new Promise(resolve => {
                 setTimeout(() => {
                     this._executeUntilSuccess(fn, args).then(result => resolve(result));
-                }, 700);
+                }, 5000);
             });
         }
     }
