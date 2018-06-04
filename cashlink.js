@@ -19,13 +19,18 @@ class CashLink {
         this._immutable = !!(value || message);
         this._eventListeners = {};
 
-        this.$.mempool.on('transaction-added', this._onTransactionAdded.bind(this));
+        this.$.mempool.on('transaction-added', this._onTransactionAddedOrExpired.bind(this));
+        this.$.mempool.on('transaction-expired', this._onTransactionAddedOrExpired.bind(this));
         this.$.blockchain.on('head-changed', this._onHeadChanged.bind(this));
         this.$.consensus.on('established', this._onPotentialBalanceChange.bind(this));
+
+        if (this._isNano) {
+            this.$.consensus.subscribeAccounts([wallet.address]); // Todo keep track of subscribed accounts
+        }
     }
 
     static async create($) {
-        const wallet = await Nimiq.Wallet.createVolatile()
+        const wallet = await Nimiq.Wallet.generate();
         return new CashLink($, wallet);
     }
 
@@ -36,8 +41,8 @@ class CashLink {
             const value = buf.readUint64();
             const message = decodeURIComponent(buf.readVarLengthString());
 
-            const keyPair = await Nimiq.KeyPair.derive(key);
-            const wallet = await new Nimiq.Wallet(keyPair);
+            const keyPair = Nimiq.KeyPair.derive(key);
+            const wallet = new Nimiq.Wallet(keyPair);
 
             return new CashLink($, wallet, value, message);
         } catch (e) {
@@ -47,7 +52,7 @@ class CashLink {
 
     render() {
         const buf = new Nimiq.SerialBuffer(
-            /*key*/ 32 +
+            /*key*/ this._wallet.keyPair.privateKey.serializedSize +
             /*value*/ 8 +
             /*message length*/ 1 +
             /*message*/ (this._message ? this._message.length : 0)
@@ -77,7 +82,7 @@ class CashLink {
     set message(message) {
         if (this._immutable) throw 'CashLink is immutable';
         message = encodeURIComponent(message);
-        if (!Nimiq.NumberUtils.isUint8(message.length)) throw 'Message is to long';
+        if (!Nimiq.NumberUtils.isUint8(message.length)) throw 'Message is too long';
         this._message = message;
     }
 
@@ -102,7 +107,7 @@ class CashLink {
                 throw 'Failed to forward transaction to the network';
             }
         } else {
-            if (!await this.$.mempool.pushTransaction(transaction)) {
+            if ((await this.$.mempool.pushTransaction(transaction)) < 0) {
                 throw 'Failed to push transaction into mempool';
             }
         }
@@ -123,13 +128,13 @@ class CashLink {
 
 
     async fund(fee = 0) {
-        // don't apply _executeUntilSuccess to avoid accidential double funding. Rather throw the exception.
+        // don't apply _executeUntilSuccess to avoid accidental double funding. Rather throw the exception.
         if (!Nimiq.NumberUtils.isUint64(fee)) {
             throw 'Malformed fee';
         }
 
-        if (this._value === 0) {
-            throw 'Cannot fund CashLink with zero value';
+        if (!this._value) {
+            throw 'Unknown value';
         }
 
         const account = await this._getAccount(this.$.wallet.address); // the senders account
@@ -138,7 +143,8 @@ class CashLink {
         }
 
         // The recipient pays the fee, thus send value - fee.
-        const transaction = await this.$.wallet.createTransaction(this._wallet.address, this._value - fee, fee, account.nonce);
+        const transaction = await this.$.wallet.createTransaction(this._wallet.address, this._value - fee, fee,
+            await this._getBlockchainHeight()); // TODO send via keyguard
         await this._sendTransaction(transaction);
 
         this._value = this._value - fee;
@@ -146,15 +152,22 @@ class CashLink {
 
 
     async claim(fee = 0) {
-        // get out the money. Only the confirmed amount, because we can't request unconfirmed money.
+        // get out the funds. Only the confirmed amount, because we can't request unconfirmed funds.
         const account = await this._getAccount();
         if (account.balance === 0) {
             throw 'There is no confirmed balance in this link';
         }
-        const transaction = await this._wallet.createTransaction(this.$.wallet.address, account.balance - fee, fee, account.nonce);
+        const transaction = await this._wallet.createTransaction(this.$.wallet.address, account.balance - fee, fee,
+            await this._getBlockchainHeight()); // TODO add possibility to specify wallet address
         await this._executeUntilSuccess(async () => {
             await this._sendTransaction(transaction);
         });
+    }
+
+
+    async _getBlockchainHeight() {
+        await this._awaitConsensus();
+        return this.$.blockchain.height;
     }
 
 
@@ -239,7 +252,7 @@ class CashLink {
     }
 
 
-    async _onTransactionAdded(transaction) {
+    async _onTransactionAddedOrExpired(transaction) {
         if (transaction.recipient.equals(this._wallet.address)
             || (transaction.sender).equals(this._wallet.address)) {
             const amount = await this.getAmount(true);
@@ -268,15 +281,19 @@ class CashLink {
 
         if (balance !== oldBalance) {
             this.fire('confirmed-amount-changed', balance);
-            // for getAmount(true) ensure that already validated transactions get removed.
-            this.$.mempool._evictTransactions();
         }
     }
 
 
     async wasEmptied() {
-        const account = await this._getAccount();
-        // considered emptied if value is 0 and account has been used
-        return account.nonce > 0 && account.balance === 0;
+        return this._executeUntilSuccess(async () => {
+            await this._awaitConsensus();
+            const [transactionReceipts, balance] = await Promise.all([
+                this.$.consensus._requestTransactionReceipts(this._wallet.address),
+                this.getAmount()
+            ]);
+            // considered emptied if value is 0 and account has been used
+            return balance === 0 && transactionReceipts.length > 0;
+        });
     }
 }

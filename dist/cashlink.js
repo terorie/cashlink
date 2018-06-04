@@ -21,14 +21,19 @@ class CashLink {
         this._immutable = !!(value || message);
         this._eventListeners = {};
 
-        this.$.mempool.on('transaction-added', this._onTransactionAdded.bind(this));
+        this.$.mempool.on('transaction-added', this._onTransactionAddedOrExpired.bind(this));
+        this.$.mempool.on('transaction-expired', this._onTransactionAddedOrExpired.bind(this));
         this.$.blockchain.on('head-changed', this._onHeadChanged.bind(this));
         this.$.consensus.on('established', this._onPotentialBalanceChange.bind(this));
+
+        if (this._isNano) {
+            this.$.consensus.subscribeAccounts([wallet.address]); // Todo keep track of subscribed accounts
+        }
     }
 
     static create($) {
         return _asyncToGenerator(function* () {
-            const wallet = yield Nimiq.Wallet.createVolatile();
+            const wallet = yield Nimiq.Wallet.generate();
             return new CashLink($, wallet);
         })();
     }
@@ -41,8 +46,8 @@ class CashLink {
                 const value = buf.readUint64();
                 const message = decodeURIComponent(buf.readVarLengthString());
 
-                const keyPair = yield Nimiq.KeyPair.derive(key);
-                const wallet = yield new Nimiq.Wallet(keyPair);
+                const keyPair = Nimiq.KeyPair.derive(key);
+                const wallet = new Nimiq.Wallet(keyPair);
 
                 return new CashLink($, wallet, value, message);
             } catch (e) {
@@ -53,7 +58,7 @@ class CashLink {
 
     render() {
         const buf = new Nimiq.SerialBuffer(
-        /*key*/32 +
+        /*key*/this._wallet.keyPair.privateKey.serializedSize +
         /*value*/8 +
         /*message length*/1 + (
         /*message*/this._message ? this._message.length : 0));
@@ -82,7 +87,7 @@ class CashLink {
     set message(message) {
         if (this._immutable) throw 'CashLink is immutable';
         message = encodeURIComponent(message);
-        if (!Nimiq.NumberUtils.isUint8(message.length)) throw 'Message is to long';
+        if (!Nimiq.NumberUtils.isUint8(message.length)) throw 'Message is too long';
         this._message = message;
     }
 
@@ -114,7 +119,7 @@ class CashLink {
                     throw 'Failed to forward transaction to the network';
                 }
             } else {
-                if (!(yield _this2.$.mempool.pushTransaction(transaction))) {
+                if ((yield _this2.$.mempool.pushTransaction(transaction)) < 0) {
                     throw 'Failed to push transaction into mempool';
                 }
             }
@@ -134,7 +139,7 @@ class CashLink {
                         _this3._executeUntilSuccess(fn, args).then(function (result) {
                             return resolve(result);
                         });
-                    }, 700);
+                    }, 5000);
                 });
             }
         })();
@@ -144,13 +149,13 @@ class CashLink {
         var _this4 = this;
 
         return _asyncToGenerator(function* () {
-            // don't apply _executeUntilSuccess to avoid accidential double funding. Rather throw the exception.
+            // don't apply _executeUntilSuccess to avoid accidental double funding. Rather throw the exception.
             if (!Nimiq.NumberUtils.isUint64(fee)) {
                 throw 'Malformed fee';
             }
 
-            if (_this4._value === 0) {
-                throw 'Cannot fund CashLink with zero value';
+            if (!_this4._value) {
+                throw 'Unknown value';
             }
 
             const account = yield _this4._getAccount(_this4.$.wallet.address); // the senders account
@@ -159,7 +164,7 @@ class CashLink {
             }
 
             // The recipient pays the fee, thus send value - fee.
-            const transaction = yield _this4.$.wallet.createTransaction(_this4._wallet.address, _this4._value - fee, fee, account.nonce);
+            const transaction = yield _this4.$.wallet.createTransaction(_this4._wallet.address, _this4._value - fee, fee, (yield _this4._getBlockchainHeight())); // TODO send via keyguard
             yield _this4._sendTransaction(transaction);
 
             _this4._value = _this4._value - fee;
@@ -170,61 +175,70 @@ class CashLink {
         var _this5 = this;
 
         return _asyncToGenerator(function* () {
-            // get out the money. Only the confirmed amount, because we can't request unconfirmed money.
+            // get out the funds. Only the confirmed amount, because we can't request unconfirmed funds.
             const account = yield _this5._getAccount();
             if (account.balance === 0) {
                 throw 'There is no confirmed balance in this link';
             }
-            const transaction = yield _this5._wallet.createTransaction(_this5.$.wallet.address, account.balance - fee, fee, account.nonce);
+            const transaction = yield _this5._wallet.createTransaction(_this5.$.wallet.address, account.balance - fee, fee, (yield _this5._getBlockchainHeight())); // TODO add possibility to specify wallet address
             yield _this5._executeUntilSuccess(_asyncToGenerator(function* () {
                 yield _this5._sendTransaction(transaction);
             }));
         })();
     }
 
-    _getAccount(address = this._wallet.address) {
+    _getBlockchainHeight() {
         var _this6 = this;
 
         return _asyncToGenerator(function* () {
-            let request = _this6._accountRequests.get(address);
+            yield _this6._awaitConsensus();
+            return _this6.$.blockchain.height;
+        })();
+    }
+
+    _getAccount(address = this._wallet.address) {
+        var _this7 = this;
+
+        return _asyncToGenerator(function* () {
+            let request = _this7._accountRequests.get(address);
             if (!request) {
-                const headHash = _this6.$.blockchain.headHash;
-                request = _this6._executeUntilSuccess(_asyncToGenerator(function* () {
-                    yield _this6._awaitConsensus();
+                const headHash = _this7.$.blockchain.headHash;
+                request = _this7._executeUntilSuccess(_asyncToGenerator(function* () {
+                    yield _this7._awaitConsensus();
                     let account;
-                    if (_this6._isNano) {
-                        account = yield _this6.$.consensus.getAccount(address);
+                    if (_this7._isNano) {
+                        account = yield _this7.$.consensus.getAccount(address);
                     } else {
-                        account = yield _this6.$.accounts.get(address);
+                        account = yield _this7.$.accounts.get(address);
                     }
                     account = account || Nimiq.BasicAccount.INITIAL;
-                    if (!_this6.$.blockchain.headHash.equals(headHash) && _this6._accountRequests.get(address)) {
+                    if (!_this7.$.blockchain.headHash.equals(headHash) && _this7._accountRequests.get(address)) {
                         // the head changed and there was a new account request for the new head, so we return
                         // that newer request
-                        return _this6._accountRequests.get(address);
+                        return _this7._accountRequests.get(address);
                     } else {
                         // the head didn't change (so everything alright) or we don't have a newer request and
                         // just return the result we got for the older head
-                        if (address.equals(_this6._wallet.address)) {
-                            _this6._currentBalance = account.balance;
+                        if (address.equals(_this7._wallet.address)) {
+                            _this7._currentBalance = account.balance;
                         }
                         return account;
                     }
                 }));
-                _this6._accountRequests.set(address, request);
+                _this7._accountRequests.set(address, request);
             }
             return request; // a promise
         })();
     }
 
     getAmount(includeUnconfirmed) {
-        var _this7 = this;
+        var _this8 = this;
 
         return _asyncToGenerator(function* () {
-            let balance = (yield _this7._getAccount()).balance;
+            let balance = (yield _this8._getAccount()).balance;
             if (includeUnconfirmed) {
-                const transferWalletAddress = _this7._wallet.address;
-                for (const transaction of _this7.$.mempool.getTransactions()) {
+                const transferWalletAddress = _this8._wallet.address;
+                for (const transaction of _this8.$.mempool.getTransactions()) {
                     const sender = transaction.sender;
                     const recipient = transaction.recipient;
                     if (recipient.equals(transferWalletAddress)) {
@@ -266,56 +280,57 @@ class CashLink {
         });
     }
 
-    _onTransactionAdded(transaction) {
-        var _this8 = this;
+    _onTransactionAddedOrExpired(transaction) {
+        var _this9 = this;
 
         return _asyncToGenerator(function* () {
-            if (transaction.recipient.equals(_this8._wallet.address) || transaction.sender.equals(_this8._wallet.address)) {
-                const amount = yield _this8.getAmount(true);
-                _this8.fire('unconfirmed-amount-changed', amount);
+            if (transaction.recipient.equals(_this9._wallet.address) || transaction.sender.equals(_this9._wallet.address)) {
+                const amount = yield _this9.getAmount(true);
+                _this9.fire('unconfirmed-amount-changed', amount);
             }
         })();
     }
 
     _onHeadChanged(head, branching) {
-        var _this9 = this;
+        var _this10 = this;
 
         return _asyncToGenerator(function* () {
             // balances potentially changed
-            _this9._accountRequests.clear();
+            _this10._accountRequests.clear();
             if (!branching) {
                 // only interested in final balance
-                yield _this9._onPotentialBalanceChange();
+                yield _this10._onPotentialBalanceChange();
             }
         })();
     }
 
     _onPotentialBalanceChange() {
-        var _this10 = this;
+        var _this11 = this;
 
         return _asyncToGenerator(function* () {
-            if (!_this10.$.consensus.established) {
+            if (!_this11.$.consensus.established) {
                 // only interested in final balance
                 return;
             }
-            const oldBalance = _this10._currentBalance;
-            const balance = yield _this10.getAmount();
+            const oldBalance = _this11._currentBalance;
+            const balance = yield _this11.getAmount();
 
             if (balance !== oldBalance) {
-                _this10.fire('confirmed-amount-changed', balance);
-                // for getAmount(true) ensure that already validated transactions get removed.
-                _this10.$.mempool._evictTransactions();
+                _this11.fire('confirmed-amount-changed', balance);
             }
         })();
     }
 
     wasEmptied() {
-        var _this11 = this;
+        var _this12 = this;
 
         return _asyncToGenerator(function* () {
-            const account = yield _this11._getAccount();
-            // considered emptied if value is 0 and account has been used
-            return account.nonce > 0 && account.balance === 0;
+            return _this12._executeUntilSuccess(_asyncToGenerator(function* () {
+                yield _this12._awaitConsensus();
+                const [transactionReceipts, balance] = yield Promise.all([_this12.$.consensus._requestTransactionReceipts(_this12._wallet.address), _this12.getAmount()]);
+                // considered emptied if value is 0 and account has been used
+                return balance === 0 && transactionReceipts.length > 0;
+            }));
         })();
     }
 }
