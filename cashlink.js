@@ -1,4 +1,6 @@
-class CashLink {
+import Config from '/libraries/secure-utils/config/config.js';
+
+export default class Cashlink {
     constructor($, wallet, value = undefined, message = undefined) {
         this.$ = $;
         this._isNano = $.consensus instanceof Nimiq.NanoConsensus;
@@ -31,23 +33,7 @@ class CashLink {
 
     static async create($) {
         const wallet = await Nimiq.Wallet.generate();
-        return new CashLink($, wallet);
-    }
-
-    static async parse($, str) {
-        try {
-            const buf = Nimiq.BufferUtils.fromBase64Url(str);
-            const key = Nimiq.PrivateKey.unserialize(buf);
-            const value = buf.readUint64();
-            const message = decodeURIComponent(buf.readVarLengthString());
-
-            const keyPair = Nimiq.KeyPair.derive(key);
-            const wallet = new Nimiq.Wallet(keyPair);
-
-            return new CashLink($, wallet, value, message);
-        } catch (e) {
-            return undefined;
-        }
+        return new Cashlink($, wallet);
     }
 
     render() {
@@ -62,7 +48,38 @@ class CashLink {
         buf.writeUint64(this._value);
         buf.writeVarLengthString(this._message);
 
-        return Nimiq.BufferUtils.toBase64Url(buf);
+        let result = Nimiq.BufferUtils.toBase64Url(buf);
+        // replace trailing . by = because of URL parsing issues on iPhone.
+        result = result.replace(/\./g, '=');
+        // iPhone also has a problem to parse long words with more then 300 chars in a URL in WhatsApp
+        // (and possibly others). Therefore we break the words by adding a ~
+        result = result.replace(/[A-Za-z0-9_]{257,}/g, function(match) {
+            return match.replace(/.{256}/g,"$&~"); // add a ~ every 256 characters in long words
+        });
+        return result;
+    }
+
+    static parse($, str) {
+        try {
+            str = str.replace(/~/g, '').replace(/=*$/, function(match) {
+                let replacement = '';
+                for (let i=0; i<match.length; ++i) {
+                    replacement += '.';
+                }
+                return replacement;
+            });
+            const buf = Nimiq.BufferUtils.fromBase64Url(str);
+            const key = Nimiq.PrivateKey.unserialize(buf);
+            const value = buf.readUint64();
+            const message = decodeURIComponent(buf.readVarLengthString());
+
+            const keyPair = Nimiq.KeyPair.derive(key);
+            const wallet = new Nimiq.Wallet(keyPair);
+
+            return new Cashlink($, wallet, value, message);
+        } catch (e) {
+            return undefined;
+        }
     }
 
     get value() {
@@ -70,7 +87,7 @@ class CashLink {
     }
 
     set value(value) {
-        if (this._immutable) throw 'CashLink is immutable';
+        if (this._immutable) throw 'Cashlink is immutable';
         if (!Nimiq.NumberUtils.isUint64(value) || value === 0) throw 'Malformed value';
         this._value = value;
     }
@@ -80,7 +97,7 @@ class CashLink {
     }
 
     set message(message) {
-        if (this._immutable) throw 'CashLink is immutable';
+        if (this._immutable) throw 'Cashlink is immutable';
         message = encodeURIComponent(message);
         if (!Nimiq.NumberUtils.isUint8(message.length)) throw 'Message is too long';
         this._message = message;
@@ -127,38 +144,56 @@ class CashLink {
     }
 
 
-    async fund(fee = 0) {
+    async fund(accountManager, senderUserFriendlyAddress, fee = 0) {
         // don't apply _executeUntilSuccess to avoid accidental double funding. Rather throw the exception.
         if (!Nimiq.NumberUtils.isUint64(fee)) {
             throw 'Malformed fee';
         }
-
         if (!this._value) {
             throw 'Unknown value';
         }
+        if (fee >= this._value) {
+            throw 'Fee higher than value';
+        }
 
-        const account = await this._getAccount(this.$.wallet.address); // the senders account
+        const [account, validityStartHeight] = await Promise.all([
+            this._getAccount(Nimiq.Address.fromUserFriendlyAddress(senderUserFriendlyAddress)),
+            this._getBlockchainHeight()
+        ]);
         if (account.balance < this._value) {
             throw 'Insufficient funds';
         }
 
-        // The recipient pays the fee, thus send value - fee.
-        const transaction = await this.$.wallet.createTransaction(this._wallet.address, this._value - fee, fee,
-            await this._getBlockchainHeight()); // TODO send via keyguard
-        await this._sendTransaction(transaction);
+        const tx = {
+            network: Config.network,
+            validityStartHeight: validityStartHeight,
+            sender: senderUserFriendlyAddress,
+            recipient: this._wallet.address.toUserFriendlyAddress(),
+            // The recipient pays the fee, thus send value - fee.
+            value: Nimiq.Policy.satoshisToCoins(this._value - fee),
+            fee: Nimiq.Policy.satoshisToCoins(fee),
+        };
+        const signedTx = await accountManager.sign(tx);
 
+        const senderPubKey = Nimiq.PublicKey.unserialize(new Nimiq.SerialBuffer(signedTx.senderPubKey));
+        const signature = Nimiq.Signature.unserialize(new Nimiq.SerialBuffer(signedTx.signature));
+        const networkId = Nimiq.GenesisConfig.CONFIGS[Config.network].NETWORK_ID;
+        const nimiqTx = new Nimiq.BasicTransaction(senderPubKey, this._wallet.address, this._value - fee, fee,
+            validityStartHeight, signature, networkId);
+        await this._sendTransaction(nimiqTx);
         this._value = this._value - fee;
     }
 
 
-    async claim(fee = 0) {
+    async claim(recipientUserFriendlyAddress, fee = 0) {
         // get out the funds. Only the confirmed amount, because we can't request unconfirmed funds.
         const account = await this._getAccount();
         if (account.balance === 0) {
             throw 'There is no confirmed balance in this link';
         }
-        const transaction = await this._wallet.createTransaction(this.$.wallet.address, account.balance - fee, fee,
-            await this._getBlockchainHeight()); // TODO add possibility to specify wallet address
+        const recipient = Nimiq.Address.fromUserFriendlyAddress(recipientUserFriendlyAddress);
+        const transaction = await this._wallet.createTransaction(recipient, account.balance - fee, fee,
+            await this._getBlockchainHeight());
         await this._executeUntilSuccess(async () => {
             await this._sendTransaction(transaction);
         });
