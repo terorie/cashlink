@@ -46,7 +46,7 @@ export default class Cashlink {
 
         this._wallet.keyPair.privateKey.serialize(buf);
         buf.writeUint64(this._value);
-        buf.writeVarLengthString(this._message);
+        buf.writeVarLengthString(this.message);
 
         let result = Nimiq.BufferUtils.toBase64Url(buf);
         // replace trailing . by = because of URL parsing issues on iPhone.
@@ -71,7 +71,7 @@ export default class Cashlink {
             const buf = Nimiq.BufferUtils.fromBase64Url(str);
             const key = Nimiq.PrivateKey.unserialize(buf);
             const value = buf.readUint64();
-            const message = decodeURIComponent(buf.readVarLengthString());
+            const message = buf.readVarLengthString();
 
             const keyPair = Nimiq.KeyPair.derive(key);
             const wallet = new Nimiq.Wallet(keyPair);
@@ -93,16 +93,18 @@ export default class Cashlink {
     }
 
     get message() {
-        return decodeURIComponent(this._message || '');
+        return this._message || '';
     }
 
     set message(message) {
         if (this._immutable) throw 'Cashlink is immutable';
-        message = encodeURIComponent(message);
         if (!Nimiq.NumberUtils.isUint8(message.length)) throw 'Message is too long';
         this._message = message;
     }
 
+    get address() {
+        return this._wallet.address;
+    }
 
     async _awaitConsensus() {
         if (!this.$.consensus.established) {
