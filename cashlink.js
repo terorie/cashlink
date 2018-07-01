@@ -158,17 +158,10 @@ export default class Cashlink {
             throw 'Fee higher than value';
         }
 
-        const [account, validityStartHeight] = await Promise.all([
-            this._getAccount(Nimiq.Address.fromUserFriendlyAddress(senderUserFriendlyAddress)),
-            this._getBlockchainHeight()
-        ]);
-        if (account.balance < this._value) {
-            throw 'Insufficient funds';
-        }
-
+        const validityStartHeight = this.$.blockchain.height;
         const tx = {
             network: Config.network,
-            validityStartHeight: validityStartHeight,
+            validityStartHeight,
             sender: senderUserFriendlyAddress,
             recipient: this._wallet.address.toUserFriendlyAddress(),
             // The recipient pays the fee, thus send value - fee.
