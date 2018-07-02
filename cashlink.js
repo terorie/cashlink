@@ -59,7 +59,7 @@ export default class Cashlink {
         return result;
     }
 
-    static parse($, str) {
+    static parse(str) {
         try {
             str = str.replace(/~/g, '').replace(/=*$/, function(match) {
                 let replacement = '';
@@ -76,7 +76,7 @@ export default class Cashlink {
             const keyPair = Nimiq.KeyPair.derive(key);
             const wallet = new Nimiq.Wallet(keyPair);
 
-            return new Cashlink($, wallet, value, message);
+            return { wallet, value, message };
         } catch (e) {
             return undefined;
         }
