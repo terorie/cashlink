@@ -27,7 +27,7 @@ export default class Cashlink {
         this.$.consensus.on('established', this._onPotentialBalanceChange.bind(this));
 
         if (this._isNano) {
-            this.$.consensus.subscribeAccounts([wallet.address]); // Todo keep track of subscribed accounts
+            // this.$.consensus.addSubscribtions(wallet.address); // Todo enable as soon as addSubscriptions was merged to core
         }
     }
 
