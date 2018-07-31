@@ -1,4 +1,5 @@
 import Config from '/libraries/secure-utils/config/config.js';
+import Utf8Tools from '/libraries/secure-utils/utf8-tools/utf8-tools.js';
 
 export default class Cashlink {
     constructor($, wallet, value = undefined, message = undefined) {
@@ -40,13 +41,16 @@ export default class Cashlink {
         const buf = new Nimiq.SerialBuffer(
             /*key*/ this._wallet.keyPair.privateKey.serializedSize +
             /*value*/ 8 +
-            /*message length*/ 1 +
-            /*message*/ (this._message ? this._message.length : 0)
+            /*message length*/ (this._messageBytes? 1 : 0) +
+            /*message*/ (this._messageBytes ? this._messageBytes.length : 0)
         );
 
         this._wallet.keyPair.privateKey.serialize(buf);
         buf.writeUint64(this._value);
-        buf.writeVarLengthString(this.message);
+        if (this._messageBytes) {
+            buf.writeUint8(this._messageBytes.length);
+            buf.write(this._messageBytes);
+        }
 
         let result = Nimiq.BufferUtils.toBase64Url(buf);
         // replace trailing . by = because of URL parsing issues on iPhone.
@@ -71,7 +75,14 @@ export default class Cashlink {
             const buf = Nimiq.BufferUtils.fromBase64Url(str);
             const key = Nimiq.PrivateKey.unserialize(buf);
             const value = buf.readUint64();
-            const message = buf.readVarLengthString();
+            let message;
+            if (buf.readPos === buf.byteLength) {
+                message = '';
+            } else {
+                const messageLength = buf.readUint8();
+                const messageBytes = buf.read(messageLength);
+                message = Utf8Tools.utf8ByteArrayToString(messageBytes);
+            }
 
             const keyPair = Nimiq.KeyPair.derive(key);
             const wallet = new Nimiq.Wallet(keyPair);
@@ -93,13 +104,14 @@ export default class Cashlink {
     }
 
     get message() {
-        return this._message || '';
+        return this._messageBytes? Utf8Tools.utf8ByteArrayToString(this._messageBytes) : '';
     }
 
     set message(message) {
         if (this._immutable) throw 'Cashlink is immutable';
-        if (!Nimiq.NumberUtils.isUint8(message.length)) throw 'Message is too long';
-        this._message = message;
+        const messageBytes = Utf8Tools.stringToUtf8ByteArray(message);
+        if (!Nimiq.NumberUtils.isUint8(messageBytes.length)) throw 'Message is too long';
+        this._messageBytes = messageBytes;
     }
 
     get address() {
