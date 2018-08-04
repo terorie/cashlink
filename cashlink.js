@@ -22,6 +22,7 @@ export default class Cashlink {
         this._immutable = !!(value || message);
         this._eventListeners = {};
 
+        // TODO only register event listeners if listening for amount-changed events
         this.$.mempool.on('transaction-added', this._onTransactionAddedOrExpired.bind(this));
         this.$.mempool.on('transaction-expired', this._onTransactionAddedOrExpired.bind(this));
         this.$.blockchain.on('head-changed', this._onHeadChanged.bind(this));
@@ -33,7 +34,7 @@ export default class Cashlink {
     }
 
     static async create($) {
-        const wallet = await Nimiq.Wallet.generate();
+        const wallet = await Nimiq.Wallet.generate(); // TODO remove async as soon as merged to core
         return new Cashlink($, wallet);
     }
 
@@ -158,7 +159,8 @@ export default class Cashlink {
     }
 
 
-    async fund(accountManager, senderUserFriendlyAddress, fee = 0) {
+    // TODO make extra data non optional as soon as new ledger app released
+    async fund(accountManager, senderUserFriendlyAddress, fee = 0, includeExtraData) {
         // don't apply _executeUntilSuccess to avoid accidental double funding. Rather throw the exception.
         if (!Nimiq.NumberUtils.isUint64(fee)) {
             throw 'Malformed fee';
@@ -170,6 +172,7 @@ export default class Cashlink {
             throw 'Fee higher than value';
         }
 
+        // not using await this._getBlockchainHeight() to stay in the event loop that opens the keyguard popup
         const validityStartHeight = this.$.blockchain.height;
         const tx = {
             network: Config.network,
@@ -180,13 +183,22 @@ export default class Cashlink {
             value: Nimiq.Policy.satoshisToCoins(this._value - fee),
             fee: Nimiq.Policy.satoshisToCoins(fee),
         };
+        if (includeExtraData) tx.extraData = Cashlink.ExtraData.FUNDING;
         const signedTx = await accountManager.sign(tx);
 
         const senderPubKey = Nimiq.PublicKey.unserialize(new Nimiq.SerialBuffer(signedTx.senderPubKey));
         const signature = Nimiq.Signature.unserialize(new Nimiq.SerialBuffer(signedTx.signature));
+        const proof = Nimiq.SignatureProof.singleSig(senderPubKey, signature).serialize();
         const networkId = Nimiq.GenesisConfig.CONFIGS[Config.network].NETWORK_ID;
-        const nimiqTx = new Nimiq.BasicTransaction(senderPubKey, this._wallet.address, this._value - fee, fee,
-            validityStartHeight, signature, networkId);
+        let nimiqTx;
+        if (includeExtraData) {
+            nimiqTx = new Nimiq.ExtendedTransaction(Nimiq.Address.fromUserFriendlyAddress(senderUserFriendlyAddress),
+                Nimiq.Account.Type.BASIC, this._wallet.address, Nimiq.Account.Type.BASIC, this._value - fee, fee,
+                validityStartHeight, Nimiq.Transaction.Flag.NONE, tx.extraData, proof, networkId);
+        } else {
+            nimiqTx = new Nimiq.BasicTransaction(senderPubKey, this._wallet.address, this._value - fee, fee,
+                validityStartHeight, signature, networkId);
+        }
         await this._sendTransaction(nimiqTx);
         this._value = this._value - fee;
     }
@@ -199,8 +211,13 @@ export default class Cashlink {
             throw 'There is no confirmed balance in this link';
         }
         const recipient = Nimiq.Address.fromUserFriendlyAddress(recipientUserFriendlyAddress);
-        const transaction = await this._wallet.createTransaction(recipient, account.balance - fee, fee,
-            await this._getBlockchainHeight());
+        const transaction = new Nimiq.ExtendedTransaction(this._wallet.address, Nimiq.Account.Type.BASIC,
+            recipient, Nimiq.Account.Type.BASIC, account.balance - fee, fee, await this._getBlockchainHeight(),
+            Nimiq.Transaction.Flag.NONE, Cashlink.ExtraData.CLAIMING);
+        const keyPair = this._wallet.keyPair;
+        const signature = Nimiq.Signature.create(keyPair.privateKey, keyPair.publicKey, transaction.serializeContent());
+        const proof = Nimiq.SignatureProof.singleSig(keyPair.publicKey, signature).serialize();
+        transaction.proof = proof;
         await this._executeUntilSuccess(async () => {
             await this._sendTransaction(transaction);
         });
@@ -339,3 +356,7 @@ export default class Cashlink {
         });
     }
 }
+Cashlink.ExtraData = {
+    FUNDING: new Uint8Array([0, 130, 128, 146, 135]), // 'CASH'.split('').map(c => c.charCodeAt(0) + 63)
+    CLAIMING: new Uint8Array([0, 139, 136, 141, 138]) // 'LINK'.split('').map(c => c.charCodeAt(0) + 63)
+};
