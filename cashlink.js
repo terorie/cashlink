@@ -7,11 +7,13 @@ export default class Cashlink {
         this._isNano = $.consensus instanceof Nimiq.NanoConsensus;
 
         this._wallet = wallet;
-        this._accountRequests = new Map(); // for request caching
+        // for request caching
+        this._accountRequests = new Map();
+        this._wasEmptiedRequest = null;
         if ($.consensus.established) {
             this.getAmount().then(balance => this._currentBalance = balance);
         } else {
-            // value will we updated as soon as we have consensus (in _onPotentialBalanceChange)
+            // value will be updated as soon as we have consensus (in _onPotentialBalanceChange)
             // and a confirmed-amount-changed event gets fired
             this._currentBalance = 0;
         }
@@ -99,8 +101,8 @@ export default class Cashlink {
     }
 
     set value(value) {
-        if (this._immutable) throw 'Cashlink is immutable';
-        if (!Nimiq.NumberUtils.isUint64(value) || value === 0) throw 'Malformed value';
+        if (this._immutable) throw new Error('Cashlink is immutable');
+        if (!Nimiq.NumberUtils.isUint64(value) || value === 0) throw new Error('Malformed value');
         this._value = value;
     }
 
@@ -109,9 +111,9 @@ export default class Cashlink {
     }
 
     set message(message) {
-        if (this._immutable) throw 'Cashlink is immutable';
+        if (this._immutable) throw new Error('Cashlink is immutable');
         const messageBytes = Utf8Tools.stringToUtf8ByteArray(message);
-        if (!Nimiq.NumberUtils.isUint8(messageBytes.length)) throw 'Message is too long';
+        if (!Nimiq.NumberUtils.isUint8(messageBytes.length)) throw new Error('Message is too long');
         this._messageBytes = messageBytes;
     }
 
@@ -119,13 +121,19 @@ export default class Cashlink {
         return this._wallet.address;
     }
 
+    get recipient() {
+        return this._recipient;
+    }
+
     async _awaitConsensus() {
-        if (!this.$.consensus.established) {
-            await new Promise((resolve, reject) => {
-                this.$.consensus.on('established', resolve);
-                setTimeout(() => reject('Current network consensus unknown.'), 60000);
+        if (this.$.consensus.established) return;
+        return new Promise(resolve => {
+            const listenerId = this.$.consensus.on('established', () => {
+                this.$.consensus.off('established', listenerId);
+                resolve();
             });
-        }
+            setTimeout(() => reject(new Error('Current network consensus unknown.')), 60000);
+        });
     }
 
 
@@ -136,11 +144,11 @@ export default class Cashlink {
                 await this.$.consensus.relayTransaction(transaction);
             } catch(e) {
                 console.error(e);
-                throw 'Failed to forward transaction to the network';
+                throw new Error('Failed to forward transaction to the network');
             }
         } else {
             if ((await this.$.mempool.pushTransaction(transaction)) < 0) {
-                throw 'Failed to push transaction into mempool';
+                throw new Error('Failed to push transaction into mempool');
             }
         }
     }
@@ -163,13 +171,13 @@ export default class Cashlink {
     async fund(accountManager, senderUserFriendlyAddress, fee = 0, includeExtraData) {
         // don't apply _executeUntilSuccess to avoid accidental double funding. Rather throw the exception.
         if (!Nimiq.NumberUtils.isUint64(fee)) {
-            throw 'Malformed fee';
+            throw new Error('Malformed fee');
         }
         if (!this._value) {
-            throw 'Unknown value';
+            throw new Error('Unknown value');
         }
         if (fee >= this._value) {
-            throw 'Fee higher than value';
+            throw new Error('Fee higher than value');
         }
 
         // not using await this._getBlockchainHeight() to stay in the event loop that opens the keyguard popup
@@ -185,6 +193,7 @@ export default class Cashlink {
         };
         if (includeExtraData) tx.extraData = Cashlink.ExtraData.FUNDING;
         const signedTx = await accountManager.sign(tx);
+        if (!signedTx) throw new Error('Transaction cancelled.');
 
         const senderPubKey = Nimiq.PublicKey.unserialize(new Nimiq.SerialBuffer(signedTx.senderPubKey));
         const signature = Nimiq.Signature.unserialize(new Nimiq.SerialBuffer(signedTx.signature));
@@ -208,11 +217,11 @@ export default class Cashlink {
         // get out the funds. Only the confirmed amount, because we can't request unconfirmed funds.
         const account = await this._getAccount();
         if (account.balance === 0) {
-            throw 'There is no confirmed balance in this link';
+            throw new Error('There is no confirmed balance in this link');
         }
-        const recipient = Nimiq.Address.fromUserFriendlyAddress(recipientUserFriendlyAddress);
+        this._recipient = Nimiq.Address.fromUserFriendlyAddress(recipientUserFriendlyAddress);
         const transaction = new Nimiq.ExtendedTransaction(this._wallet.address, Nimiq.Account.Type.BASIC,
-            recipient, Nimiq.Account.Type.BASIC, account.balance - fee, fee, await this._getBlockchainHeight(),
+            this._recipient, Nimiq.Account.Type.BASIC, account.balance - fee, fee, await this._getBlockchainHeight(),
             Nimiq.Transaction.Flag.NONE, Cashlink.ExtraData.CLAIMING);
         const keyPair = this._wallet.keyPair;
         const signature = Nimiq.Signature.create(keyPair.privateKey, keyPair.publicKey, transaction.serializeContent());
@@ -323,6 +332,7 @@ export default class Cashlink {
     async _onHeadChanged(head, branching) {
         // balances potentially changed
         this._accountRequests.clear();
+        this._wasEmptiedRequest = null;
         if (!branching) {
             // only interested in final balance
             await this._onPotentialBalanceChange();
@@ -345,15 +355,18 @@ export default class Cashlink {
 
 
     async wasEmptied() {
-        return this._executeUntilSuccess(async () => {
+        if (this._wasEmptied) return true;
+        this._wasEmptiedRequest = this._wasEmptiedRequest || this._executeUntilSuccess(async () => {
             await this._awaitConsensus();
             const [transactionReceipts, balance] = await Promise.all([
                 this.$.consensus._requestTransactionReceipts(this._wallet.address),
                 this.getAmount()
             ]);
             // considered emptied if value is 0 and account has been used
-            return balance === 0 && transactionReceipts.length > 0;
+            this._wasEmptied = balance === 0 && transactionReceipts.length > 0;
+            return this._wasEmptied;
         });
+        return this._wasEmptiedRequest;
     }
 }
 Cashlink.ExtraData = {
