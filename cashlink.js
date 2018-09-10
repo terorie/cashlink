@@ -1,3 +1,4 @@
+import CashlinkExtraData from './cashlink-extra-data.js';
 import Config from '/libraries/secure-utils/config/config.js';
 import Utf8Tools from '/libraries/secure-utils/utf8-tools/utf8-tools.js';
 
@@ -167,8 +168,7 @@ export default class Cashlink {
     }
 
 
-    // TODO make extra data non optional as soon as new ledger app released
-    async fund(accountManager, senderUserFriendlyAddress, fee = 0, includeExtraData) {
+    async fund(accountManager, senderUserFriendlyAddress, fee = 0) {
         // don't apply _executeUntilSuccess to avoid accidental double funding. Rather throw the exception.
         if (!Nimiq.NumberUtils.isUint64(fee)) {
             throw new Error('Malformed fee');
@@ -190,8 +190,8 @@ export default class Cashlink {
             // The recipient pays the fee, thus send value - fee.
             value: Nimiq.Policy.satoshisToCoins(this._value - fee),
             fee: Nimiq.Policy.satoshisToCoins(fee),
+            extraData: Cashlink.ExtraData.FUNDING
         };
-        if (includeExtraData) tx.extraData = Cashlink.ExtraData.FUNDING;
         const signedTx = await accountManager.sign(tx);
         if (!signedTx) throw new Error('Transaction cancelled.');
 
@@ -199,15 +199,9 @@ export default class Cashlink {
         const signature = Nimiq.Signature.unserialize(new Nimiq.SerialBuffer(signedTx.signature));
         const proof = Nimiq.SignatureProof.singleSig(senderPubKey, signature).serialize();
         const networkId = Nimiq.GenesisConfig.CONFIGS[Config.network].NETWORK_ID;
-        let nimiqTx;
-        if (includeExtraData) {
-            nimiqTx = new Nimiq.ExtendedTransaction(Nimiq.Address.fromUserFriendlyAddress(senderUserFriendlyAddress),
-                Nimiq.Account.Type.BASIC, this._wallet.address, Nimiq.Account.Type.BASIC, this._value - fee, fee,
-                validityStartHeight, Nimiq.Transaction.Flag.NONE, tx.extraData, proof, networkId);
-        } else {
-            nimiqTx = new Nimiq.BasicTransaction(senderPubKey, this._wallet.address, this._value - fee, fee,
-                validityStartHeight, signature, networkId);
-        }
+        const nimiqTx = new Nimiq.ExtendedTransaction(Nimiq.Address.fromUserFriendlyAddress(senderUserFriendlyAddress),
+            Nimiq.Account.Type.BASIC, this._wallet.address, Nimiq.Account.Type.BASIC, this._value - fee, fee,
+            validityStartHeight, Nimiq.Transaction.Flag.NONE, tx.extraData, proof, networkId);
         await this._sendTransaction(nimiqTx);
         this._value = this._value - fee;
     }
@@ -369,7 +363,4 @@ export default class Cashlink {
         return this._wasEmptiedRequest;
     }
 }
-Cashlink.ExtraData = {
-    FUNDING: new Uint8Array([0, 130, 128, 146, 135]), // 'CASH'.split('').map(c => c.charCodeAt(0) + 63)
-    CLAIMING: new Uint8Array([0, 139, 136, 141, 138]) // 'LINK'.split('').map(c => c.charCodeAt(0) + 63)
-};
+Cashlink.ExtraData = CashlinkExtraData;
